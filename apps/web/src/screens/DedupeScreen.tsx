@@ -208,7 +208,12 @@ export function DedupeScreen({ requireConfirmation }: Props) {
 
       <section className="card">
         <h2>Execution Plan Preview</h2>
-        {plan && plan.items.length > 0 ? (
+        {statusLoading ? (
+          <div className="status-refreshing">
+            <span className="spinner" />
+            Refreshing
+          </div>
+        ) : plan && plan.items.length > 0 ? (
           <table>
             <thead>
               <tr>
@@ -242,7 +247,12 @@ export function DedupeScreen({ requireConfirmation }: Props) {
 
       <section className="card">
         <h2>Manual Review</h2>
-        {manualReviewItems.length > 0 ? (
+        {statusLoading ? (
+          <div className="status-refreshing">
+            <span className="spinner" />
+            Refreshing
+          </div>
+        ) : manualReviewItems.length > 0 ? (
           <table>
             <thead>
               <tr>
