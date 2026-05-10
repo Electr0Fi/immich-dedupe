@@ -1,0 +1,12 @@
+{
+  "name": "@immich-dedupe/immich-client",
+  "private": true,
+  "version": "0.1.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "echo immich-client build not set yet",
+    "lint": "echo immich-client lint not set yet",
+    "typecheck": "echo immich-client typecheck not set yet"
+  }
+}

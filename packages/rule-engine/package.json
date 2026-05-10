@@ -1,0 +1,15 @@
+{
+  "name": "@immich-dedupe/rule-engine",
+  "private": true,
+  "version": "0.1.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@immich-dedupe/shared": "workspace:*"
+  },
+  "scripts": {
+    "build": "echo rule-engine build not set yet",
+    "lint": "echo rule-engine lint not set yet",
+    "typecheck": "echo rule-engine typecheck not set yet"
+  }
+}

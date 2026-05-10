@@ -1,0 +1,26 @@
+[
+  {
+    "timestamp": "2026-04-20T18:12:33.503Z",
+    "groupId": "003008f9-0c3d-44e7-a1fd-c00ac0b220b6",
+    "keepAssetId": "2409a653-45eb-4cea-9fa1-77d4679dd4bb",
+    "trashAssetId": "29312bac-6e39-4c4d-8c38-6b7ba5b79ae2",
+    "success": false,
+    "message": "Dry run: no changes executed"
+  },
+  {
+    "timestamp": "2026-04-20T18:12:33.553Z",
+    "groupId": "003b79f4-66d4-4253-967b-594c0bad1ade",
+    "keepAssetId": "a7e39dd9-a469-4db3-b43e-6e51554f0f59",
+    "trashAssetId": "b0429531-5b55-4b9a-ab3f-72842d4b5d51",
+    "success": false,
+    "message": "Dry run: no changes executed"
+  },
+  {
+    "timestamp": "2026-04-20T18:12:59.456Z",
+    "groupId": "003008f9-0c3d-44e7-a1fd-c00ac0b220b6",
+    "keepAssetId": "2409a653-45eb-4cea-9fa1-77d4679dd4bb",
+    "trashAssetId": "29312bac-6e39-4c4d-8c38-6b7ba5b79ae2",
+    "success": true,
+    "message": "Album transfer completed and duplicate deleted"
+  }
+]
