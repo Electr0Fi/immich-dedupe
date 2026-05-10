@@ -189,3 +189,15 @@ export function testConnection(params: { immichUrl: string; apiKey: string }) {
 export function saveConnectionConfig(params: { immichUrl: string; apiKey: string }) {
   return apiPost<{ ok: boolean; error?: string }>("/settings/connection", params);
 }
+
+export type ServerConnectionStatus = 'connected' | 'disconnected' | 'error' | 'checking';
+
+export type ServerStatusResponse = {
+  ok: boolean;
+  status: Exclude<ServerConnectionStatus, 'checking'>;
+  immichUrl: string;
+};
+
+export function getServerStatus() {
+  return apiGet<ServerStatusResponse>("/settings/status");
+}

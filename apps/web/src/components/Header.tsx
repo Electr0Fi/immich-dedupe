@@ -1,10 +1,10 @@
-// TODO: replace mock values with real Immich connection probe
-export type ConnectionStatus = 'connected' | 'not_connected' | 'error';
+export type ConnectionStatus = 'connected' | 'disconnected' | 'error' | 'checking';
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
   connected: 'Connected',
-  not_connected: 'Not Connected',
+  disconnected: 'Disconnected',
   error: 'Error',
+  checking: 'Checking...',
 };
 
 type Props = {
