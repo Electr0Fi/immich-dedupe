@@ -15,6 +15,12 @@ let cachedStatus: ExecutionStatusResponse | null = null;
 let cachedPlan: ExecutionPlanResponse | null = null;
 let cachedAnalysis: DuplicateAnalysisResponse | null = null;
 
+export function clearDedupeCache() {
+  cachedStatus = null;
+  cachedPlan = null;
+  cachedAnalysis = null;
+}
+
 type Props = {
   requireConfirmation: boolean;
 };

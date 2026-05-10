@@ -1,5 +1,6 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
 import { getConnectionConfig, saveConnectionConfig, testConnection } from '../api';
+import { clearDedupeCache } from './DedupeScreen';
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
 
@@ -180,7 +181,7 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
   function handleResetCache() {
     const confirmed = window.confirm('Reset local cache? This will clear any locally cached scan data.');
     if (confirmed) {
-      window.alert('Cache reset. (No persistent cache exists in this build.)');
+      clearDedupeCache();
     }
   }
 
