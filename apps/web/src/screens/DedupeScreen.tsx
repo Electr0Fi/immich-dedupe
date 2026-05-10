@@ -10,7 +10,11 @@ import {
   type ExecutionStatusResponse,
 } from '../api';
 
-export function DedupeScreen() {
+type Props = {
+  requireConfirmation: boolean;
+};
+
+export function DedupeScreen({ requireConfirmation }: Props) {
   const [scanLimit, setScanLimit] = useState(100);
   const [executeLimit, setExecuteLimit] = useState(5);
 
@@ -49,10 +53,12 @@ export function DedupeScreen() {
   }
 
   async function handleExecute() {
-    const confirmed = window.confirm(
-      `Execute up to ${executeLimit} duplicate resolutions from the first ${scanLimit} scanned groups?`
-    );
-    if (!confirmed) return;
+    if (requireConfirmation) {
+      const confirmed = window.confirm(
+        `Execute up to ${executeLimit} duplicate resolutions from the first ${scanLimit} scanned groups?`
+      );
+      if (!confirmed) return;
+    }
 
     setLoading(true);
     setError(null);

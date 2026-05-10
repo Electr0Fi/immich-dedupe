@@ -165,3 +165,27 @@ export function clearExecutionLog() {
 export function getExecutionLogExportUrl(format: "json" | "csv") {
   return `${API_BASE_URL}/execution/log/export.${format}`;
 }
+
+export type ConnectionConfigResponse = {
+  ok: boolean;
+  immichUrl: string;
+  apiKey: string;
+};
+
+export type TestConnectionResponse = {
+  ok: boolean;
+  version?: string;
+  error?: string;
+};
+
+export function getConnectionConfig() {
+  return apiGet<ConnectionConfigResponse>("/settings/connection");
+}
+
+export function testConnection(params: { immichUrl: string; apiKey: string }) {
+  return apiPost<TestConnectionResponse>("/settings/test-connection", params);
+}
+
+export function saveConnectionConfig(params: { immichUrl: string; apiKey: string }) {
+  return apiPost<{ ok: boolean; error?: string }>("/settings/connection", params);
+}

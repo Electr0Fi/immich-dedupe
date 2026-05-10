@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import fs from "fs";
+import path from "path";
 import { env } from "./config";
 import "./immich";
 
@@ -205,6 +207,82 @@ app.get("/health", (_req, res) => {
     service: "api",
     timestamp: new Date().toISOString(),
   });
+});
+
+function updateEnvFile(updates: Record<string, string>): void {
+  const envPath = path.resolve(process.cwd(), ".env");
+  let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf-8") : "";
+
+  for (const [key, value] of Object.entries(updates)) {
+    const linePattern = new RegExp(`^${key}=.*$`, "m");
+    if (linePattern.test(content)) {
+      content = content.replace(linePattern, `${key}=${value}`);
+    } else {
+      content = content.trimEnd() + `\n${key}=${value}\n`;
+    }
+  }
+
+  fs.writeFileSync(envPath, content, "utf-8");
+}
+
+app.get("/settings/connection", (_req, res) => {
+  res.json({
+    ok: true,
+    immichUrl: env.IMMICH_URL,
+    apiKey: env.IMMICH_API_KEY,
+  });
+});
+
+app.post("/settings/connection", (req, res) => {
+  const { immichUrl, apiKey } = req.body ?? {};
+
+  if (!immichUrl || !apiKey) {
+    return res.status(400).json({ ok: false, error: "immichUrl and apiKey are required." });
+  }
+
+  try {
+    updateEnvFile({ IMMICH_URL: immichUrl, IMMICH_API_KEY: apiKey });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Failed to save settings.",
+    });
+  }
+});
+
+app.post("/settings/test-connection", async (req, res) => {
+  const { immichUrl, apiKey } = req.body ?? {};
+
+  if (!immichUrl || !apiKey) {
+    return res.status(400).json({ ok: false, error: "immichUrl and apiKey are required." });
+  }
+
+  try {
+    const aboutRes = await fetch(`${immichUrl}/server/about`, {
+      headers: { "x-api-key": apiKey },
+    });
+
+    if (aboutRes.status === 401) {
+      return res.json({ ok: false, error: "Error: API key is invalid." });
+    }
+
+    if (!aboutRes.ok) {
+      return res.json({ ok: false, error: `Server error: HTTP ${aboutRes.status}` });
+    }
+
+    const about = await aboutRes.json() as { version?: string };
+
+    res.json({
+      ok: true,
+      version: about.version ?? "unknown",
+    });
+  } catch (error) {
+    res.json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Connection failed.",
+    });
+  }
 });
 
 app.get("/immich/test", async (_req, res) => {
