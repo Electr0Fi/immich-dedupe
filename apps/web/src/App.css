@@ -442,6 +442,15 @@ input[type='checkbox'] {
   padding-bottom: 0;
 }
 
+.toggle-row--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.toggle-row--disabled input {
+  cursor: not-allowed;
+}
+
 .toggle-row input[type='checkbox'] {
   margin-top: 2px;
   flex-shrink: 0;

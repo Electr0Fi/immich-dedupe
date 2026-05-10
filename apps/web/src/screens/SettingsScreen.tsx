@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
 import { getConnectionConfig, saveConnectionConfig, testConnection } from '../api';
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
@@ -53,11 +53,12 @@ export const DEFAULT_PERFORMANCE: PerformanceConfig = {
   cacheEnabled: true,
 };
 
-const SAFETY_TOGGLES: Array<{ key: keyof SafetyConfig; label: string; hint: string }> = [
+const SAFETY_TOGGLES: Array<{ key: keyof SafetyConfig; label: string; hint: string; disabled?: boolean }> = [
   {
     key: 'dryRunByDefault',
     label: 'Dry-run by default',
     hint: 'Simulate all operations without making changes unless explicitly overridden.',
+    disabled: true,
   },
   {
     key: 'requireConfirmation',
@@ -68,27 +69,35 @@ const SAFETY_TOGGLES: Array<{ key: keyof SafetyConfig; label: string; hint: stri
     key: 'preferTrash',
     label: 'Prefer trash over permanent delete',
     hint: 'Send assets to the Immich trash instead of deleting them permanently.',
+    disabled: true,
   },
   {
     key: 'blockPermanentDelete',
     label: 'Block permanent delete',
     hint: 'Prevent hard deletes unless this setting is explicitly disabled.',
+    disabled: true,
   },
   {
     key: 'warnFavorites',
     label: 'Warn when a favorited asset is selected',
     hint: 'Show a warning if a favorited asset is about to be trashed.',
+    disabled: true,
   },
   {
     key: 'warnMultipleAlbums',
     label: 'Warn when asset is in multiple albums',
     hint: 'Show a warning if an asset appears in more than one album.',
+    disabled: true,
   },
 ];
 
-export function SettingsScreen() {
+type Props = {
+  safety: SafetyConfig;
+  onSafetyChange: Dispatch<SetStateAction<SafetyConfig>>;
+};
+
+export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
   const [conn, setConn] = useState<ConnectionState>(DEFAULT_CONNECTION);
-  const [safety, setSafety] = useState<SafetyConfig>(DEFAULT_SAFETY);
   const [perf, setPerf] = useState<PerformanceConfig>(DEFAULT_PERFORMANCE);
 
   useEffect(() => {
@@ -260,11 +269,12 @@ export function SettingsScreen() {
         </p>
 
         <div className="toggle-list">
-          {SAFETY_TOGGLES.map(({ key, label, hint }) => (
-            <label key={key} className="toggle-row">
+          {SAFETY_TOGGLES.map(({ key, label, hint, disabled }) => (
+            <label key={key} className={`toggle-row${disabled ? ' toggle-row--disabled' : ''}`}>
               <input
                 type="checkbox"
                 checked={safety[key]}
+                disabled={disabled}
                 onChange={(e) => setSafety((prev) => ({ ...prev, [key]: e.target.checked }))}
               />
               <span>
