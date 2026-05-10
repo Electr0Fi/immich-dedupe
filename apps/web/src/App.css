@@ -485,6 +485,32 @@ input[type='checkbox'] {
   flex-wrap: wrap;
 }
 
+/* ─── Spinner ────────────────────────────────────── */
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #dde2ea;
+  border-top-color: #1a56db;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.status-refreshing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #5a6475;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 /* ─── Responsive ─────────────────────────────────── */
 
 @media (max-width: 900px) {

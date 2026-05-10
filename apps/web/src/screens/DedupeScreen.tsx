@@ -10,6 +10,11 @@ import {
   type ExecutionStatusResponse,
 } from '../api';
 
+// Module-level cache — survives mount/unmount so navigating away and back skips re-fetch.
+let cachedStatus: ExecutionStatusResponse | null = null;
+let cachedPlan: ExecutionPlanResponse | null = null;
+let cachedAnalysis: DuplicateAnalysisResponse | null = null;
+
 type Props = {
   requireConfirmation: boolean;
 };
@@ -18,24 +23,35 @@ export function DedupeScreen({ requireConfirmation }: Props) {
   const [scanLimit, setScanLimit] = useState(100);
   const [executeLimit, setExecuteLimit] = useState(5);
 
-  const [status, setStatus] = useState<ExecutionStatusResponse | null>(null);
-  const [plan, setPlan] = useState<ExecutionPlanResponse | null>(null);
-  const [analysis, setAnalysis] = useState<DuplicateAnalysisResponse | null>(null);
+  const [status, setStatus] = useState<ExecutionStatusResponse | null>(cachedStatus);
+  const [plan, setPlan] = useState<ExecutionPlanResponse | null>(cachedPlan);
+  const [analysis, setAnalysis] = useState<DuplicateAnalysisResponse | null>(cachedAnalysis);
   const [lastRun, setLastRun] = useState<ExecutionRunResponse | null>(null);
 
+  const [statusLoading, setStatusLoading] = useState(!cachedStatus);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
+    setStatusLoading(true);
     setError(null);
-    const [statusResult, planResult, analysisResult] = await Promise.all([
-      getExecutionStatus(scanLimit),
-      getExecutionPlan(scanLimit),
-      getDuplicateAnalysis(scanLimit),
-    ]);
-    setStatus(statusResult);
-    setPlan(planResult);
-    setAnalysis(analysisResult);
+    try {
+      const [statusResult, planResult, analysisResult] = await Promise.all([
+        getExecutionStatus(scanLimit),
+        getExecutionPlan(scanLimit),
+        getDuplicateAnalysis(scanLimit),
+      ]);
+      cachedStatus = statusResult;
+      cachedPlan = planResult;
+      cachedAnalysis = analysisResult;
+      setStatus(statusResult);
+      setPlan(planResult);
+      setAnalysis(analysisResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setStatusLoading(false);
+    }
   }
 
   async function handleDryRun() {
@@ -74,13 +90,15 @@ export function DedupeScreen({ requireConfirmation }: Props) {
   }
 
   useEffect(() => {
-    refresh().catch((err) =>
-      setError(err instanceof Error ? err.message : 'Unknown error')
-    );
+    if (!cachedStatus) {
+      refresh();
+    }
   }, []);
 
   const manualReviewItems =
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
+
+  const buttonsDisabled = loading || statusLoading;
 
   return (
     <div>
@@ -115,13 +133,13 @@ export function DedupeScreen({ requireConfirmation }: Props) {
         </div>
 
         <div className="buttonRow">
-          <button disabled={loading} onClick={() => refresh()}>
+          <button disabled={buttonsDisabled} onClick={() => refresh()}>
             Refresh
           </button>
-          <button disabled={loading} onClick={handleDryRun}>
+          <button disabled={buttonsDisabled} onClick={handleDryRun}>
             Dry run
           </button>
-          <button disabled={loading} className="danger" onClick={handleExecute}>
+          <button disabled={buttonsDisabled} className="danger" onClick={handleExecute}>
             Execute
           </button>
         </div>
@@ -132,7 +150,12 @@ export function DedupeScreen({ requireConfirmation }: Props) {
       <section className="grid">
         <div className="card">
           <h2>Status</h2>
-          {status ? (
+          {statusLoading ? (
+            <div className="status-refreshing">
+              <span className="spinner" />
+              Refreshing
+            </div>
+          ) : status ? (
             <dl className="stats">
               <div>
                 <dt>Total Duplicates</dt>
