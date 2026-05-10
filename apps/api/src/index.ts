@@ -225,6 +225,35 @@ function updateEnvFile(updates: Record<string, string>): void {
   fs.writeFileSync(envPath, content, "utf-8");
 }
 
+app.get("/settings/status", async (_req, res) => {
+  try {
+    const pingRes = await fetch(`${env.IMMICH_URL}/server/ping`);
+    const pingData = await pingRes.json() as { res?: string };
+
+    if (!pingRes.ok || pingData?.res !== "pong") {
+      return res.json({ ok: true, status: "disconnected", immichUrl: env.IMMICH_URL });
+    }
+
+    const aboutRes = await fetch(`${env.IMMICH_URL}/server/about`, {
+      headers: { "x-api-key": env.IMMICH_API_KEY },
+    });
+
+    if (aboutRes.status === 401) {
+      return res.json({ ok: true, status: "error", immichUrl: env.IMMICH_URL });
+    }
+
+    const about = await aboutRes.json() as { version?: string };
+
+    if (about?.version) {
+      return res.json({ ok: true, status: "connected", immichUrl: env.IMMICH_URL });
+    }
+
+    res.json({ ok: true, status: "error", immichUrl: env.IMMICH_URL });
+  } catch {
+    res.json({ ok: true, status: "disconnected", immichUrl: env.IMMICH_URL });
+  }
+});
+
 app.get("/settings/connection", (_req, res) => {
   res.json({
     ok: true,

@@ -91,7 +91,7 @@ input {
   color: #1a7a4a;
 }
 
-.connection-badge--not_connected {
+.connection-badge--disconnected {
   background: #f1f3f6;
   color: #5a6475;
 }
@@ -99,6 +99,11 @@ input {
 .connection-badge--error {
   background: #fff1f1;
   color: #ba2b2b;
+}
+
+.connection-badge--checking {
+  background: #e8f0fe;
+  color: #1a56db;
 }
 
 /* ─── Sidebar ────────────────────────────────────── */
