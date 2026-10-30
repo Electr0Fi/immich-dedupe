@@ -161,42 +161,38 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         {error && <p className="error" role="alert">Preview refresh failed: {error}. Execution results below are preserved.</p>}
       </section>
 
-      <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
-
-      <section className="grid">
-        <div className="card">
-          <h2>Status</h2>
-          {statusLoading ? (
-            <div className="status-refreshing">
-              <span className="spinner" />
-              Refreshing
+      <section className="card">
+        <h2>Status</h2>
+        {statusLoading ? (
+          <div className="status-refreshing">
+            <span className="spinner" />
+            Refreshing
+          </div>
+        ) : status ? (
+          <dl className="stats">
+            <div>
+              <dt>Total Duplicates</dt>
+              <dd>{status.duplicateCount}</dd>
             </div>
-          ) : status ? (
-            <dl className="stats">
-              <div>
-                <dt>Total Duplicates</dt>
-                <dd>{status.duplicateCount}</dd>
-              </div>
-              <div>
-                <dt>Scanned</dt>
-                <dd>{status.scannedDuplicateCount}</dd>
-              </div>
-              <div>
-                <dt>Executable</dt>
-                <dd>{status.executableCount}</dd>
-              </div>
-              <div>
-                <dt>Log Entries</dt>
-                <dd>{status.logCount}</dd>
-              </div>
-            </dl>
-          ) : (
-            <p>No status loaded.</p>
-          )}
-        </div>
-
-
+            <div>
+              <dt>Scanned</dt>
+              <dd>{status.scannedDuplicateCount}</dd>
+            </div>
+            <div>
+              <dt>Executable</dt>
+              <dd>{status.executableCount}</dd>
+            </div>
+            <div>
+              <dt>Log Entries</dt>
+              <dd>{status.logCount}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p>No status loaded.</p>
+        )}
       </section>
+
+      <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
 
       <section className="card">
         <h2>Execution Plan Preview</h2>
