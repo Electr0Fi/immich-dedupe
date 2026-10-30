@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { reviewedCandidateSchema, candidateFromGroup, changedCandidate } from "./reviewedPlan";
-import type { AssetRecord } from "@immich-dedupe/shared";
+import type { AssetRecord, ReviewedRunEvidence } from "@immich-dedupe/shared";
 import path from "node:path";
 import { z } from "zod";
 import type { ExecutionCheckpoint, ExecutionScope, RecoveryAttempt, ExecutionResult, RecoveryAssessment } from "@immich-dedupe/shared";
@@ -66,7 +66,7 @@ const runSchema = z.discriminatedUnion("version", [
   z.object({ ...runFields, version: z.literal(3), context: contextSchema, report: reportSchema.nullable(), review: reviewSchema }),
 ]);
 const legacySchema = z.object({ version: z.literal(1), scope: scopeSchema, importedAt: timestamp, groupIds: ids });
-type WithAttempts<T> = T extends unknown ? Omit<T, "attempts"> & { attempts: RecoveryAttempt[] } : never;
+type WithAttempts<T> = T extends { review: unknown } ? Omit<T, "attempts" | "review"> & { attempts: RecoveryAttempt[]; review: ReviewedRunEvidence } : T extends unknown ? Omit<T, "attempts"> & { attempts: RecoveryAttempt[] } : never;
 export type JournalRun = WithAttempts<z.infer<typeof runSchema>>;
 export class JournalError extends Error {}
 export function sameScope(a: ExecutionScope, b: ExecutionScope) { return a.apiUrl === b.apiUrl && a.accountId === b.accountId; }
@@ -164,7 +164,7 @@ function validateAuthorization(run: JournalRun, records: Map<string, JournalRun>
   if (run.version !== 3 || run.context.dryRun) return;
   const authorization = records.get(run.review.authorizingDryRunId!);
   if (!authorization || authorization.version !== 3 || !sameScope(run.scope, authorization.scope) || !authorization.context.dryRun ||
-      !authorization.finishedAt || !authorization.report || authorization.report.stoppedEarly || authorization.report.requestError ||
+      !authorization.finishedAt || authorization.context.scanLimit !== run.context.scanLimit || authorization.context.executeLimit !== run.context.executeLimit || !authorization.report || authorization.report.stoppedEarly || authorization.report.requestError ||
       JSON.stringify(authorization.review) !== JSON.stringify({ ...run.review, authorizingDryRunId: null }) ||
       authorization.attempts.length !== run.review.selectedGroupIds.length || authorization.attempts.some((a) => a.result?.outcome !== "dry-run")) throw new Error("Missing successful reviewed dry-run evidence");
 }

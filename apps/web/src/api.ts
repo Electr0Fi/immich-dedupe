@@ -1,5 +1,5 @@
-import type { RunViewResponse } from '@immich-dedupe/shared';
-export type { RunView, RunViewResponse } from '@immich-dedupe/shared';
+import type { RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
+export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
@@ -23,7 +23,7 @@ async function readResponse<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const partial = data?.partialExecution;
-    throw new ApiError(response.status, typeof data?.error === 'string' ? data.error : response.statusText,
+    throw new ApiError(response.status, (typeof data?.error === 'string' ? data.error : response.statusText) + (Array.isArray(data?.changedGroups) ? data.changedGroups.map((g: { groupId: string; reasons: string[] }) => ` Group ${g.groupId}: ${Array.isArray(g.reasons) ? g.reasons.join('; ') : 'changed'}`).join('') : ''),
       partial && Array.isArray(partial.results) && typeof partial.runId === 'string' ? partial : undefined,
       typeof data?.code === 'string' ? data.code : undefined, typeof data?.runId === 'string' ? data.runId : undefined);
   }
@@ -97,6 +97,8 @@ export type DuplicateAnalysisResponse = {
 
 export type ExecutionRunResponse = {
   runId?: string;
+  planId?: string;
+  selectedCount?: number;
   excludedGroups?: Array<{ groupId: string; reason: 'processed' | 'legacy' | 'quarantined'; attemptIds: string[] }>;
   stoppedEarly: boolean;
   stopReason: string | null;
@@ -273,4 +275,14 @@ export function recheckAttempt(attemptId: string) {
 }
 export function releaseAttempt(attemptId: string) {
   return apiPost<{ ok: boolean; attempt: RecoveryAttempt }>(`/execution/recovery/${encodeURIComponent(attemptId)}/release`, { confirm: true });
+}
+
+export function prepareReviewedPlan(scanLimit: number, executeLimit: number) {
+  return apiPost<ReviewedPlanResponse>('/execution/plans', { scanLimit, executeLimit });
+}
+export function runReviewedPlan(planId: string, selectedGroupIds: string[], dryRun: boolean) {
+  return apiPost<ExecutionRunResponse>(`/execution/plans/${encodeURIComponent(planId)}/run`, { selectedGroupIds, dryRun });
+}
+export function getReviewedThumbnailUrl(planId: string, assetId: string) {
+  return `${API_BASE_URL}/execution/plans/${encodeURIComponent(planId)}/assets/${encodeURIComponent(assetId)}/thumbnail`;
 }

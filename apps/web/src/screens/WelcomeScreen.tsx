@@ -18,8 +18,8 @@ export function WelcomeScreen() {
         <h2>How it works</h2>
         <ol className="welcome-steps">
           <li>Connect to your Immich instance via Settings.</li>
-          <li>Run a dry-run in the Dedupe screen to preview what would be resolved.</li>
-          <li>Review the execution plan carefully before running a live execution.</li>
+          <li>Prepare a review in Dedupe, compare thumbnails and album changes, and include the groups you want.</li>
+          <li>Dry-run the exact selection, then explicitly execute the reviewed batch.</li>
           <li>Monitor results in the Logs screen.</li>
         </ol>
       </section>
@@ -29,7 +29,7 @@ export function WelcomeScreen() {
         <h3>Available now</h3>
         <ul>
           <li>Review duplicate groups already identified by Immich.</li>
-          <li>Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs. A spinner and status message show when a request is in progress.</li>
+          <li>Compare image thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute the reviewed batch, and view or export logs. A spinner and status message show when a request is in progress.</li>
           <li>Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.</li>
           <li>Single-group and batch execution share safety checks, logging, and run/attempt IDs. Overlapping execution or recovery actions are rejected within one API process.</li>
           <li>Unfinished and uncertain attempts stay quarantined across restarts. In Logs, recheck outcomes and explicitly allow a new attempt only when the pair is still intact and eligible; neither action runs cleanup.</li>
@@ -44,7 +44,8 @@ export function WelcomeScreen() {
         </ul>
         <h3>Current limitations</h3>
         <ul>
-          <li>Manual review displays decisions only. Manual keeper selection, thumbnails, configurable rules, and the dedicated History view are not available.</li>
+          <li>Manual review displays decisions only. Manual keeper selection, configurable rules, and the dedicated History view are not available.</li>
+          <li>Reviews expire after 15 minutes, are consumed by live requests, and require rebuilding after page reload or API restart. Legacy API live routes still use the older workflow until a later release.</li>
           <li>Scans examine the first selected number of groups; resumable full-library scanning is not available.</li>
           <li>Album protection covers memberships visible to your configured Immich account. Operations are not transactional and may leave partial changes.</li>
           <li>Use one API instance per data directory. Multi-process locking, automatic retry/resumption, rollback, and asset restoration are not available. Other unresolved attempts can still block an explicitly released pair.</li>

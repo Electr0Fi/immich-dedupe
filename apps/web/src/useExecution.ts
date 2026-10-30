@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, getLatestRun, getRun, runExecution, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
+import { ApiError, getLatestRun, getRun, prepareReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
 
 type Request = { phase: 'pending' | 'unknown' | 'failed'; dryRun: boolean; message: string; runId?: string; partial?: boolean } | null;
 function responseView(result: ExecutionRunResponse, startedAt: string): RunView {
   return {
+    ...(result.planId ? { planId: result.planId, selectedCount: result.selectedCount } : {}),
     runId: result.runId ?? 'Not recorded', startedAt, finishedAt: result.ok ? new Date().toISOString() : null,
     phase: result.ok ? 'finished' : 'interrupted',
     context: { dryRun: result.dryRun, scanLimit: result.scanLimit, executeLimit: result.executeLimit, source: 'batch', groupId: null },
@@ -18,6 +19,14 @@ function responseView(result: ExecutionRunResponse, startedAt: string): RunView 
 
 /** Owned by the shell so navigation cannot lose an in-flight request or its result. */
 export function useExecution(open: boolean) {
+  const [review, setReview] = useState<ReviewedPlan | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [limits, setLimits] = useState({ scanLimit: 100, executeLimit: 5 });
+  const [preparing, setPreparing] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [authorization, setAuthorization] = useState<string | null>(null);
+  const [invalid, setInvalid] = useState(false);
+  const [expired, setExpired] = useState(false);
   const [run, setRun] = useState<RunView | null>(null);
   const [partialRun, setPartialRun] = useState<RunView | null>(null);
   const [request, setRequest] = useState<Request>(null);
@@ -32,7 +41,7 @@ export function useExecution(open: boolean) {
   const applyLatest = useCallback((value: RunViewResponse, current: number) => {
     if (!mounted.current || version.current !== current) return;
     const key = JSON.stringify(value.scope);
-    if (scope.current && scope.current !== key) { setPartialRun(null); setRequest(null); }
+    if (scope.current && scope.current !== key) { setPartialRun(null); setRequest(null); setReview(null); setAuthorization(null); setSelected([]); }
     scope.current = key;
     setRun(value.run); setReadError(null);
     setPartialRun((partial) => partial && partial.runId === value.run?.runId ? {
@@ -48,7 +57,7 @@ export function useExecution(open: boolean) {
   const readFailure = useCallback((error: unknown, current: number) => {
     if (!mounted.current || version.current !== current) return;
     setReadError(error instanceof Error ? error.message : 'Latest run could not be loaded');
-    if (error instanceof ApiError && error.code === 'identity_unavailable') { setRun(null); setPartialRun(null); }
+    if (error instanceof ApiError && error.code === 'identity_unavailable') { setRun(null); setPartialRun(null); setReview(null); setAuthorization(null); setSelected([]); }
   }, []);
   const refreshLatest = useCallback(async () => {
     if (pending.current) return;
@@ -66,15 +75,54 @@ export function useExecution(open: boolean) {
       .finally(() => { if (mounted.current && version.current === current) setReading(false); });
   }, [open, applyLatest, readFailure]);
 
-  async function execute(params: { dryRun: boolean; scanLimit: number; executeLimit: number }) {
+  useEffect(() => {
+    if (!review) return;
+    const timer = window.setTimeout(() => { setExpired(true); setAuthorization(null); }, Math.max(0, Date.parse(review.expiresAt) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [review]);
+
+  function changeLimits(next: typeof limits) {
     if (pending.current) return;
+    setLimits(next); setReview(null); setAuthorization(null); setSelected([]); setReviewError(null);
+  }
+  function selectGroups(ids: string[]) {
+    if (pending.current || !review) return;
+    if (ids.length > review.executeLimit) return;
+    const ordered = review.candidates.filter((c) => ids.includes(c.groupId)).map((c) => c.groupId);
+    setSelected(ordered); setAuthorization(null);
+  }
+  async function prepare() {
+    if (pending.current) return;
+    pending.current = true;
+    const current = ++version.current;
+    setPreparing(true); setReview(null); setSelected([]); setAuthorization(null); setReviewError(null); setReading(false);
+    try {
+      const value = await prepareReviewedPlan(limits.scanLimit, limits.executeLimit);
+      if (!mounted.current || version.current !== current) return;
+      const key = JSON.stringify(value.plan.scope);
+      if (scope.current && key !== scope.current) { setRun(null); setPartialRun(null); setRequest(null); }
+      scope.current = key;
+      setReview(value.plan); setSelected(value.plan.candidates.slice(0, value.plan.executeLimit).map((c) => c.groupId));
+      setInvalid(false); setExpired(Date.parse(value.plan.expiresAt) <= Date.now());
+    } catch (error) {
+      if (mounted.current && version.current === current) setReviewError(error instanceof Error ? error.message : 'Review could not be prepared');
+    } finally { pending.current = false; if (mounted.current && version.current === current) setPreparing(false); }
+  }
+  const validReview = Boolean(review && !invalid && !expired);
+  const selectionKey = JSON.stringify(selected);
+  async function execute(params: { dryRun: boolean }) {
+    if (pending.current || !review || !validReview || selected.length === 0 || (!params.dryRun && authorization !== selectionKey)) return;
+    if (Date.parse(review.expiresAt) <= Date.now()) { setExpired(true); setAuthorization(null); return; }
+    const approved = authorization;
+    setAuthorization(null);
+    if (!params.dryRun) setInvalid(true);
     pending.current = true;
     const current = ++version.current;
     const startedAt = new Date().toISOString();
     setReading(false); setReadError(null);
     setRequest({ phase: 'pending', dryRun: params.dryRun, message: params.dryRun ? 'Dry-run request in progress…' : 'Live execution request in progress…' });
     try {
-      const result = await runExecution(params);
+      const result = await runReviewedPlan(review.planId, selected, params.dryRun);
       if (!mounted.current || version.current !== current) return;
       setRun(responseView(result, startedAt)); setPartialRun(null);
       if (result.runId) {
@@ -83,9 +131,15 @@ export function useExecution(open: boolean) {
           if (mounted.current && version.current === current) setReadError('Results received; saved evidence could not be refreshed. Use Refresh latest to check the journal.');
         }
       }
-      if (mounted.current && version.current === current) setRequest(null);
+      if (mounted.current && version.current === current) {
+        setRequest(null);
+        if (params.dryRun && result.ok && !result.stoppedEarly && result.results.length === selected.length && result.results.every((r) => r.outcome === 'dry-run')) setAuthorization(selectionKey);
+        else { setInvalid(true); setAuthorization(null); }
+      }
     } catch (error) {
       if (!mounted.current || version.current !== current) return;
+      if (error instanceof ApiError && error.code === 'execution_busy') { setInvalid(false); setAuthorization(approved); }
+      else setInvalid(true);
       const message = error instanceof Error ? error.message : 'The execution response was lost';
       if (error instanceof ApiError && error.partialExecution) setPartialRun(responseView(error.partialExecution, startedAt));
       const unknown = !(error instanceof ApiError) || (error.status >= 500 && !['identity_unavailable', 'journal_unavailable'].includes(error.code ?? ''));
@@ -93,6 +147,8 @@ export function useExecution(open: boolean) {
         runId: error instanceof ApiError ? error.runId : undefined, partial: error instanceof ApiError && Boolean(error.partialExecution) });
     } finally { pending.current = false; }
   }
-  return { run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
+  return { review, selected, limits, preparing, reviewError, expired, invalid, validReview,
+    prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
+    run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }
 export type ExecutionState = ReturnType<typeof useExecution>;

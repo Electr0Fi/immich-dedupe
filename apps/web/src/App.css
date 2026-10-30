@@ -651,3 +651,13 @@ button:focus-visible, summary:focus-visible { outline: 3px solid #1a56db; outlin
   .app-header { padding: 0 12px; }
   .app-header__url { display: none; }
 }
+
+.review-candidate { padding: 20px 0; border-top: 1px solid #dde2ea; margin-top: 20px; }
+.review-selection { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.review-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.review-asset { min-width: 0; padding: 16px; border: 1px solid #dde2ea; border-radius: 10px; }
+.review-asset h4 { margin: 0 0 12px; }
+.review-thumbnail, .thumbnail-placeholder { width: 100%; height: 200px; object-fit: contain; border-radius: 8px; background: #f6f7f9; }
+.thumbnail-placeholder { display: flex; justify-content: center; align-items: center; padding: 16px; color: #5a6475; }
+.asset-facts dd { font-size: 14px; font-weight: 400; margin-bottom: 12px; }
+@media (max-width: 600px) { .review-pair { grid-template-columns: minmax(0, 1fr); } }

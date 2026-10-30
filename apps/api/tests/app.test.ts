@@ -332,3 +332,25 @@ test('run read endpoints are scoped, compact and side effect free', async (t) =>
   deps.immich.getMyUser = async () => { throw { status: 403, data: { message: 'Missing required permission: user.read' } }; };
   assert.equal((await fetch(`${base}/execution/runs/latest`)).status, 503);
 });
+
+test('review endpoints validate bodies, require exact dry-run approval, and restrict thumbnail access', async (t) => {
+  const h = executionHarness('one');
+  h.client.viewAsset = async () => new Blob(['fake-image'], { type: 'image/jpeg' });
+  let time = Date.now(); const deps = dependencies(t, { immich: h.client, now: () => time }); const base = await serve(t, deps);
+  const post = (url: string, body: unknown) => fetch(`${base}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  for (const body of [{ scanLimit: 0 }, { executeLimit: 1.5 }, { scanLimit: '2' }, { scanLimit: Number.MAX_SAFE_INTEGER + 1 }]) assert.equal((await post('/execution/plans', body)).status, 400);
+  const prepared = await post('/execution/plans', {}); assert.equal(prepared.status, 200);
+  const { plan } = await prepared.json(); assert.equal(plan.scanLimit, 100); assert.equal(plan.executeLimit, 10);
+  const endpoint = `/execution/plans/${plan.planId}/run`;
+  assert.equal((await post(endpoint, { selectedGroupIds: ['one'], dryRun: false })).status, 409);
+  for (const body of [{ selectedGroupIds: [] }, { selectedGroupIds: ['one', 'one'] }, { selectedGroupIds: ['one'], dryRun: 'false' }, { selectedGroupIds: ['one'], authorized: true }]) assert.equal((await post(endpoint, body)).status, 400);
+  const thumbnail = `/execution/plans/${plan.planId}/assets/one-keep/thumbnail`;
+  const image = await fetch(`${base}${thumbnail}`); assert.equal(image.status, 200); assert.equal(image.headers.get('cache-control'), 'no-store'); assert.equal(image.headers.get('content-type'), 'image/jpeg');
+  assert.equal((await fetch(`${base}/execution/plans/${plan.planId}/assets/other/thumbnail`)).status, 404);
+  h.client.viewAsset = async () => { throw new Error('secret credentials'); };
+  const missing = await fetch(`${base}${thumbnail}`); assert.equal(missing.status, 502); assert.ok(!(await missing.text()).includes('secret'));
+  const dry = await post(endpoint, { selectedGroupIds: ['one'] }); assert.equal(dry.status, 200); assert.equal((await dry.json()).results[0].outcome, 'dry-run');
+  assert.deepEqual(h.mutations, []);
+  time += 900000; assert.equal((await fetch(`${base}${thumbnail}`)).status, 410);
+  assert.equal((await post(endpoint, { selectedGroupIds: ['one'] })).status, 410);
+});

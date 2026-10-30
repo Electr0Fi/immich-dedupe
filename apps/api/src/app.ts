@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
-import { ExecutionRequestSchema } from "./executionRequest";
+import { ExecutionRequestSchema, CreatePlanSchema, ReviewedRunSchema } from "./executionRequest";
+import { AssetMediaSize } from "@immich/sdk";
 
 import { normalizeDuplicates } from "./normalizeDuplicates";
 import { createAssetInfoEnricher } from "./enrichWithAssetInfo";
@@ -25,6 +26,7 @@ export type AppDependencies = {
   log: ExecutionLog;
   fetch: typeof globalThis.fetch;
   saveConnection: (updates: Record<string, string>) => void;
+  now?: () => number;
 };
 
 export function createApp(dependencies: AppDependencies) {
@@ -33,7 +35,7 @@ export function createApp(dependencies: AppDependencies) {
   const { getExecutionLogPath, loadExecutionLog } = log;
   const enrichDuplicatesWithAssetInfo = createAssetInfoEnricher(immich);
   const enrichDuplicatesWithAlbums = createAlbumEnricher(immich);
-  const execution = createExecutionService({ client: immich, apiUrl: env.IMMICH_URL, journal: dependencies.journal, log });
+  const execution = createExecutionService({ client: immich, apiUrl: env.IMMICH_URL, journal: dependencies.journal, log, now: dependencies.now });
   const app = express();
 
   app.use(cors());
@@ -591,6 +593,34 @@ export function createApp(dependencies: AppDependencies) {
     try { res.json({ ok: true, ...await execution.clearLog() }); }
     catch (error) { executionError(res, error); }
   });
+  app.post("/execution/plans", async (req, res) => {
+    const parsed = CreatePlanSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid review limits" });
+    try { res.json(await execution.preparePlan(parsed.data)); } catch (error) { executionError(res, error); }
+  });
+  app.post("/execution/plans/:planId/run", async (req, res) => {
+    const parsed = ReviewedRunSchema.safeParse(req.body);
+    if (!parsed.success || !z.string().uuid().safeParse(req.params.planId).success) return res.status(400).json({ ok: false, error: "Invalid reviewed execution request" });
+    try {
+      const { decision: _decision, ...result } = await execution.runReviewed(req.params.planId, parsed.data);
+      res.json(result);
+    } catch (error) { executionError(res, error); }
+  });
+  app.get("/execution/plans/:planId/assets/:assetId/thumbnail", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!z.string().uuid().safeParse(req.params.planId).success || !req.params.assetId) return res.status(400).json({ ok: false, error: "Invalid reviewed asset request" });
+    try {
+      await execution.reviewedAsset(req.params.planId, req.params.assetId);
+      const blob = await immich.viewAsset({ id: req.params.assetId, size: AssetMediaSize.Thumbnail });
+      if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(blob.type) || blob.size === 0) return res.status(502).json({ ok: false, error: "Immich returned an unsupported thumbnail" });
+      res.set("X-Content-Type-Options", "nosniff");
+      res.type(blob.type).send(Buffer.from(await blob.arrayBuffer()));
+    } catch (error) {
+      if (error instanceof ExecutionServiceError) return executionError(res, error);
+      res.status(502).json({ ok: false, error: "Thumbnail unavailable; check image access permissions in Immich" });
+    }
+  });
+
   app.get("/execution/runs/latest", async (_req, res) => {
     try { res.json(await execution.readRun()); } catch (error) { executionError(res, error); }
   });

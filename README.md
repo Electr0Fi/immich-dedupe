@@ -7,7 +7,7 @@ A local React/Express application for reviewing duplicate groups already identif
 ### Available now
 
 - Review duplicate groups already identified by Immich.
-- Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs as JSON or CSV. Dedupe shows a spinner and status message while requests are in progress.
+- Compare keeper/loser thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute reviewed batches, and view or export batch logs as JSON or CSV. Dedupe shows a spinner and status message while requests are in progress.
 - Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.
 - Recheck group membership, asset details, file sizes, and album memberships before execution rather than relying on the preview cache.
 - Single-group and batch execution share safety checks, logging, run/attempt IDs, and processed/quarantine exclusions. Overlapping execution, recovery, or log-clearing requests return HTTP 409 within one API process.
@@ -26,7 +26,8 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ### Current limitations
 
-- Manual review displays decisions only. Manual keeper selection, thumbnails, configurable rules, and the dedicated History view are not available.
+- Manual review displays decisions only. Manual keeper selection, configurable rules, and the dedicated History view are not available.
+- Reviews expire after 15 minutes and require rebuilding after reload/restart or an accepted live request. Legacy API live routes retain their old behavior until PR7.
 - Scans examine the first selected number of groups; resumable full-library scanning is not available.
 - Album protection covers memberships visible to your configured Immich account. Operations are not transactional and may leave partial changes.
 - Use one API instance per data directory. Multi-process locking, automatic retry/resumption, rollback, and restoration are not available. Investigate uncertain outcomes and recheck them before explicitly releasing a pair.
@@ -70,9 +71,10 @@ The API defaults to port 3001. Open the Vite URL printed in the terminal, normal
 
 1. Check the connection in Settings. Restart the API after saving connection changes and reload the browser to refresh the header status.
 2. Open Dedupe and choose a scan limit (groups examined) and execution limit (eligible attempts).
-3. Refresh the preview and run a dry-run. Proposed album transfers have not been performed.
-4. Review selections before choosing Execute. Execution rechecks current data and may stop if it changed.
-5. Inspect the outcome and batch logs. Investigate `needs-verification` results before retrying; no mutation is automatically retried.
+3. Click **Prepare review**. Compare the keeper/loser images, filenames, sources, dimensions, sizes, and named album changes. Include or exclude eligible groups within the attempt limit.
+4. Click **Dry-run selected**. Changing the selection clears approval. Proposed album transfers have not been performed.
+5. Choose **Execute selected** after the dry-run passes. Confirm the selected group and album-addition counts. Execution rechecks current data and may stop if it changed.
+6. Inspect the outcome and batch logs. Investigate `needs-verification` results before retrying; no mutation is automatically retried.
 
 ## Execution API behavior
 
@@ -142,7 +144,7 @@ Dedupe distinguishes verified completed, simulated, failed, needs-verification, 
 
 `GET /execution/runs/latest` and `GET /execution/runs/:runId` return compact journal views scoped to the normalized server URL and current account. They do not create migration markers, write evidence, or mutate Immich. Phases are running, finished, or interrupted (no recorded completion and no active coordinator). Details of checkpoints remain in recovery detail. No full-history listing is added.
 
-New runs use journal version 2 with immutable request context and a terminal report (counts, exclusions, stop reason and request errors). Version 1 stays readable without rewriting or inventing missing metadata. **Older application releases cannot read version 2 files: do not downgrade against the same journal directory.** Preserve all evidence when upgrading or troubleshooting.
+Legacy runs use journal version 2; reviewed runs use version 3, retaining immutable plan evidence, selection order and the authorizing dry-run ID, plus the request context and terminal report. Versions 1 and 2 remain readable unchanged. **Older application releases cannot read version 3 files: do not downgrade against the same journal directory.** Preserve all evidence when upgrading or troubleshooting.
 
 Browser checks use Chromium and fake API responses only:
 
@@ -152,3 +154,15 @@ pnpm test:ui
 ```
 
 The test command starts a dedicated frontend server and intercepts backend requests; no real API or Immich server is needed. Settings diagnostics export the current form URL, key-configured flag, connection test result, and session confirmation preference; keys and unimplemented performance settings are omitted.
+
+## Review exactly what will run
+
+The WebUI uses **Prepare review → Dry-run selected → Execute selected**. Plans are scoped to the configured server/account and expire after 15 minutes. The API retains at most 20 plans in memory, evicting the oldest after expired entries. Reviews and selection survive screen navigation, but not browser reload or API restart. Changing limits requires rebuilding; changing selection clears dry-run approval. Live requests consume their plan, including accepted requests that later fail.
+
+Only the selected groups run, in review order, with no replacement groups, manual keeper changes, or automatic retries. All selected groups are revalidated before the first mutation, then checked again individually. Changed metadata, checksums, memberships, album names/actions, or exclusions require a new review. Separate Immich API calls remain nontransactional and external races remain possible.
+
+`POST /execution/plans` accepts `scanLimit` and `executeLimit` (defaults 100/10). `POST /execution/plans/:planId/run` accepts `selectedGroupIds` and `dryRun` (default true). Live execution requires a fully recorded successful dry-run of that exact selection. Invalid input returns 400, busy/stale/unauthorized selections 409, unavailable/expired/consumed plans 410, and unavailable evidence or upstream reads 503.
+
+`GET /execution/plans/:planId/assets/:assetId/thumbnail` proxies only reviewed assets for the current connection, using backend credentials and no-store responses. Missing image permissions or unavailable thumbnails show placeholders without changing eligibility. No original images are requested.
+
+The WebUI uses planned execution exclusively. Legacy batch/single-group API routes remain available with their existing live behavior; enforcing reviewed execution on every live API route is deferred to PR7.

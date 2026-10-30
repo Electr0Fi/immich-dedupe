@@ -1,3 +1,4 @@
+import { ReviewedBatch } from '../components/ReviewedBatch';
 import { ExecutionResults } from '../components/ExecutionResults';
 import type { ExecutionState } from '../useExecution';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -6,7 +7,6 @@ import {
   getExecutionPlan,
   getExecutionStatus,
   type DuplicateAnalysisResponse,
-  type ExecutionPlanResponse,
   type ExecutionStatusResponse,
 } from '../api';
 
@@ -29,11 +29,9 @@ type Props = {
 };
 
 export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery }: Props) {
-  const [scanLimit, setScanLimit] = useState(INITIAL_SCAN_LIMIT);
-  const [executeLimit, setExecuteLimit] = useState(5);
+  const { scanLimit, executeLimit } = execution.limits;
 
   const [status, setStatus] = useState<ExecutionStatusResponse | null>(getDedupeCache()?.status ?? null);
-  const [plan, setPlan] = useState<ExecutionPlanResponse | null>(getDedupeCache()?.plan ?? null);
   const [analysis, setAnalysis] = useState<DuplicateAnalysisResponse | null>(getDedupeCache()?.analysis ?? null);
 
   const [statusLoading, setStatusLoading] = useState(!getDedupeCache());
@@ -44,7 +42,6 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
   const applySnapshot = useCallback((snapshot: DedupeSnapshot, generation: number) => {
     setDedupeCache(snapshot, generation);
     setStatus(snapshot.status);
-    setPlan(snapshot.plan);
     setAnalysis(snapshot.analysis);
   }, []);
 
@@ -65,11 +62,16 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
     }
   }
 
+  async function handlePrepare() {
+    await execution.prepare();
+    if (mounted.current) await refresh();
+  }
   async function handleRun(dryRun: boolean) {
+    const additions = execution.review?.candidates.filter((c) => execution.selected.includes(c.groupId)).reduce((n, c) => n + c.proposedAlbumIds.length, 0) ?? 0;
     if (!dryRun && requireConfirmation && !window.confirm(
-      `Execute up to ${executeLimit} duplicate resolutions from the first ${scanLimit} scanned groups?`
+      `Execute exactly ${execution.selected.length} reviewed groups with ${additions} proposed album additions? Fresh checks may stop the batch; no replacement groups will be selected.`
     )) return;
-    await execution.execute({ scanLimit, executeLimit, dryRun });
+    await execution.execute({ dryRun });
     if (mounted.current) await refresh();
   }
 
@@ -99,8 +101,8 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
   const manualReviewItems =
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
 
-  const buttonsDisabled = execution.busy || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
-  const activityMessage = execution.busy
+  const buttonsDisabled = execution.busy || execution.preparing || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
+  const activityMessage = execution.preparing ? 'Preparing a fresh review… No Immich assets will be changed.' : execution.busy
     ? execution.request?.dryRun
       ? 'Dry run in progress… No Immich assets will be changed.'
       : 'Execution in progress… Waiting for verified results.'
@@ -127,7 +129,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
               type="number"
               min={1}
               value={scanLimit}
-              onChange={(e) => setScanLimit(Number(e.target.value))}
+              disabled={execution.busy || execution.preparing} onChange={(e) => execution.changeLimits({ scanLimit: Number(e.target.value), executeLimit })}
             />
           </label>
 
@@ -137,20 +139,20 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
               type="number"
               min={1}
               value={executeLimit}
-              onChange={(e) => setExecuteLimit(Number(e.target.value))}
+              disabled={execution.busy || execution.preparing} onChange={(e) => execution.changeLimits({ scanLimit, executeLimit: Number(e.target.value) })}
             />
           </label>
         </div>
 
         <div className="buttonRow">
-          <button disabled={buttonsDisabled} onClick={() => refresh()}>
-            Refresh
+          <button disabled={buttonsDisabled} onClick={handlePrepare}>
+            Prepare review
           </button>
-          <button disabled={buttonsDisabled} onClick={() => handleRun(true)}>
-            {execution.busy && execution.request?.dryRun ? 'Running dry run…' : 'Dry run'}
+          <button disabled={buttonsDisabled || !execution.validReview || execution.selected.length === 0} onClick={() => handleRun(true)}>
+            {execution.busy && execution.request?.dryRun ? 'Running dry run…' : 'Dry-run selected'}
           </button>
-          <button disabled={buttonsDisabled} className="danger" onClick={() => handleRun(false)}>
-            {execution.busy && execution.request?.dryRun === false ? 'Executing…' : 'Execute'}
+          <button disabled={buttonsDisabled || !execution.canExecute} className="danger" onClick={() => handleRun(false)}>
+            {execution.busy && execution.request?.dryRun === false ? 'Executing…' : 'Execute selected'}
           </button>
         </div>
 
@@ -194,45 +196,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
 
       <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
 
-      <section className="card">
-        <h2>Execution Plan Preview</h2>
-        <p className="field-hint">Confidence is a fixed rule score. Execution repeats fresh safety checks and may exclude processed or quarantined groups shown in this preview.</p>
-        {statusLoading ? (
-          <div className="status-refreshing">
-            <span className="spinner" />
-            Refreshing
-          </div>
-        ) : plan && plan.items.length > 0 ? (
-          <table>
-            <thead>
-              <tr>
-                <th>Group</th>
-                <th>Keep</th>
-                <th>Trash</th>
-                <th>Confidence</th>
-                <th>Rule</th>
-                <th>Reasons</th>
-                <th>Albums</th>
-              </tr>
-            </thead>
-            <tbody>
-              {plan.items.map((item) => (
-                <tr key={item.groupId}>
-                  <td>{item.groupId}</td>
-                  <td>{item.keepAssetId}</td>
-                  <td>{item.trashAssetId}</td>
-                  <td>{item.confidence}</td>
-                  <td>{item.ruleName ?? 'Unknown'}</td>
-                  <td>{item.reasons.join('; ')}</td>
-                  <td>{item.albumTransferCount}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p>No executable plan items found.</p>
-        )}
-      </section>
+      <ReviewedBatch execution={execution} />
 
       <section className="card">
         <h2>Manual Review</h2>

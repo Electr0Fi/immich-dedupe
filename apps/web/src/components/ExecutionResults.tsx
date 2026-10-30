@@ -52,6 +52,7 @@ export function ExecutionResults({ execution, onReviewRecovery }: { execution: E
       <p><strong>{run.context ? (run.context.dryRun ? 'Dry-run' : 'Live execution') : 'Mode not recorded'} · {run.phase}</strong></p>
       {run.phase === 'running' && <p role="status">This run is still active. These are the currently recorded facts; refresh to check completion.</p>}
       {run.phase === 'interrupted' && <p className="error">The run has no recorded completion. Its outcome may be incomplete; review recovery before retrying.</p>}
+      {run.planId && <p className="run-identifier">Reviewed plan: {run.planId} · Selected: {run.selectedCount}</p>}
       <p className="run-identifier">Run: {run.runId} · Started: {run.startedAt}</p>
       <dl className="stats outcome-summary">
         {Object.entries(outcomeLabels).map(([outcome, label]) => <OutcomeStat key={outcome} label={label}

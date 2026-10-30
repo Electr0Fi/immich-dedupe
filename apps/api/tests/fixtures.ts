@@ -62,7 +62,7 @@ export function fakeImmich(overrides: Partial<ImmichClient> = {}): ImmichClient 
   const unexpected = async (): Promise<never> => { throw new Error('Unexpected Immich call'); };
   return {
     getAssetDuplicates: unexpected, getAssetInfo: unexpected, getAllAlbums: unexpected,
-    getAlbumInfo: unexpected, pingServer: unexpected, addAssetsToAlbums: unexpected,
+    getAlbumInfo: unexpected, pingServer: unexpected, addAssetsToAlbums: unexpected, viewAsset: unexpected,
     resolveDuplicates: unexpected, getMyUser: async () => ({ id: "test-user" }), ...overrides,
   };
 }
