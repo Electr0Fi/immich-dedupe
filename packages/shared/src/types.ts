@@ -151,6 +151,26 @@ export type RecoveryAttempt = {
   releasedAt: string | null;
 };
 export type ExecutionScope = { apiUrl: string; accountId: string };
+export type ReviewedAsset = Pick<AssetRecord, "id" | "duplicateId" | "fileName" | "originalPath" | "checksum" | "assetType" | "width" | "height" | "fileSize" | "isEdited" | "isTrashed" | "isFavorite" | "isArchived" | "isOffline" | "livePhotoVideoId" | "isExternal" | "isInternal" | "albums">;
+export type ReviewedCandidate = {
+  groupId: string; keepAsset: ReviewedAsset; trashAsset: ReviewedAsset; decision: DuplicateDecision;
+  requiredAlbumIds: string[]; proposedAlbumIds: string[]; skippedAlbumIds: string[];
+};
+export type ReviewedPlanExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined" | "ineligible"; message: string; attemptIds: string[] };
+export type ReviewedPlan = {
+  planId: string; scope: ExecutionScope; createdAt: string; expiresAt: string;
+  scanLimit: number; executeLimit: number; fetchedGroups: number; totalGroups: number;
+  candidates: ReviewedCandidate[]; excludedGroups: ReviewedPlanExclusion[];
+};
+export type CreateReviewedPlanRequest = { scanLimit?: number; executeLimit?: number };
+export type ReviewedExecutionRequest = { selectedGroupIds: string[]; dryRun?: boolean };
+export type ReviewedPlanResponse = { ok: true; plan: ReviewedPlan };
+export type ChangedPlanGroup = { groupId: string; reasons: string[] };
+export type ReviewedPlanChangedResponse = { ok: false; code: "plan_changed"; error: string; planId: string; changedGroups: ChangedPlanGroup[]; runId?: string };
+export type ReviewedRunEvidence = {
+  planId: string; createdAt: string; expiresAt: string; selectedGroupIds: string[];
+  candidates: ReviewedCandidate[]; authorizingDryRunId: string | null;
+};
 export type ExecutionExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined"; attemptIds: string[] };
 export type RunContext = { dryRun: boolean; scanLimit: number; executeLimit: number; source: "batch" | "single"; groupId: string | null };
 export type RunReport = {
@@ -160,6 +180,7 @@ export type RunReport = {
 };
 /** Compact read model; checkpoints remain available through recovery detail. */
 export type RunView = {
+  planId?: string; selectedCount?: number; authorizingDryRunId?: string | null;
   runId: string; startedAt: string; finishedAt: string | null;
   phase: "running" | "finished" | "interrupted";
   context: RunContext | null; report: RunReport | null;

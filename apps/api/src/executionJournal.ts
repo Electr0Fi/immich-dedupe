@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { reviewedCandidateSchema, candidateFromGroup, changedCandidate } from "./reviewedPlan";
+import type { AssetRecord } from "@immich-dedupe/shared";
 import path from "node:path";
 import { z } from "zod";
 import type { ExecutionCheckpoint, ExecutionScope, RecoveryAttempt, ExecutionResult, RecoveryAssessment } from "@immich-dedupe/shared";
@@ -53,10 +55,15 @@ const reportSchema = z.object({
   stoppedEarly: z.boolean(), stopReason: z.string().nullable(),
   requestError: z.object({ status: z.number().int().min(400).max(599), code: id, message: z.string() }).nullable(),
 });
+const reviewSchema = z.object({
+  planId: uuid, createdAt: timestamp, expiresAt: timestamp, selectedGroupIds: ids.nonempty(),
+  candidates: z.array(reviewedCandidateSchema).nonempty(), authorizingDryRunId: uuid.nullable(),
+}).strict();
 const runFields = { runId: uuid, scope: scopeSchema, startedAt: timestamp, finishedAt: timestamp.nullable(), attempts: z.array(attemptSchema) };
 const runSchema = z.discriminatedUnion("version", [
   z.object({ ...runFields, version: z.literal(1) }),
   z.object({ ...runFields, version: z.literal(2), context: contextSchema, report: reportSchema.nullable() }),
+  z.object({ ...runFields, version: z.literal(3), context: contextSchema, report: reportSchema.nullable(), review: reviewSchema }),
 ]);
 const legacySchema = z.object({ version: z.literal(1), scope: scopeSchema, importedAt: timestamp, groupIds: ids });
 type WithAttempts<T> = T extends unknown ? Omit<T, "attempts"> & { attempts: RecoveryAttempt[] } : never;
@@ -73,7 +80,7 @@ function sameIds(left: string[], right: string[]) {
 }
 function validateRun(value: unknown): JournalRun {
   const run = runSchema.parse(value);
-  if (run.version === 2) {
+  if (run.version !== 1) {
     if ((run.context.source === "single") !== (run.context.groupId !== null)) throw new Error("Inconsistent run source");
     if (run.finishedAt !== null && run.report === null) throw new Error("Missing terminal report");
     if (run.report !== null && run.finishedAt === null) throw new Error("Unfinished terminal report");
@@ -83,6 +90,19 @@ function validateRun(value: unknown): JournalRun {
         run.report.stoppedEarly !== (run.report.stopReason !== null) ||
         (run.attempts.some((a) => a.result?.outcome === "failed" || a.result?.outcome === "needs-verification") && !run.report.stoppedEarly) ||
         (run.report.requestError && !run.report.stoppedEarly))) throw new Error("Inconsistent terminal report");
+  }
+  if (run.version === 3) {
+    const review = run.review;
+    if (Date.parse(review.expiresAt) - Date.parse(review.createdAt) !== 15 * 60 * 1000 ||
+        JSON.stringify(review.selectedGroupIds) !== JSON.stringify(review.candidates.map((c) => c.groupId)) ||
+        review.selectedGroupIds.length > run.context.executeLimit || run.context.source !== "batch" ||
+        (run.context.dryRun ? review.authorizingDryRunId !== null : !review.authorizingDryRunId || review.authorizingDryRunId === run.runId) ||
+        run.attempts.some((a, i) => a.groupId !== review.selectedGroupIds[i] || a.keepAssetId !== review.candidates[i].keepAsset.id || a.trashAssetId !== review.candidates[i].trashAsset.id)) throw new Error("Inconsistent reviewed run");
+    for (const attempt of run.attempts) for (const { event } of attempt.checkpoints) if (event.kind === "preflight") {
+      const candidate = review.candidates.find((c) => c.groupId === attempt.groupId)!;
+      const actual = candidateFromGroup({ groupId: attempt.groupId, assets: event.snapshot as unknown as AssetRecord[] }, candidate.decision);
+      if (changedCandidate(candidate, actual).length) throw new Error("Reviewed preflight differs from authorized evidence");
+    }
   }
   const seen = new Set<string>();
   for (const attempt of run.attempts) {
@@ -140,6 +160,15 @@ function validateRun(value: unknown): JournalRun {
   return run as unknown as JournalRun;
 }
 
+function validateAuthorization(run: JournalRun, records: Map<string, JournalRun>) {
+  if (run.version !== 3 || run.context.dryRun) return;
+  const authorization = records.get(run.review.authorizingDryRunId!);
+  if (!authorization || authorization.version !== 3 || !sameScope(run.scope, authorization.scope) || !authorization.context.dryRun ||
+      !authorization.finishedAt || !authorization.report || authorization.report.stoppedEarly || authorization.report.requestError ||
+      JSON.stringify(authorization.review) !== JSON.stringify({ ...run.review, authorizingDryRunId: null }) ||
+      authorization.attempts.length !== run.review.selectedGroupIds.length || authorization.attempts.some((a) => a.result?.outcome !== "dry-run")) throw new Error("Missing successful reviewed dry-run evidence");
+}
+
 /** Lazy loading keeps createApp side-effect free. Any integrity/write failure poisons this instance. */
 export function createExecutionJournal(directory: string, io: JournalFs = fs) {
   let loaded = false;
@@ -162,6 +191,7 @@ export function createExecutionJournal(directory: string, io: JournalFs = fs) {
         for (const attempt of run.attempts) { if (attemptIds.has(attempt.attemptId)) throw new Error("Duplicate attempt"); attemptIds.add(attempt.attemptId); }
         next.set(run.runId, run);
       }
+      for (const run of next.values()) validateAuthorization(run, next);
       if (next.size && !legacy) throw new Error("Legacy migration marker is missing");
       runs = next;
       attemptIndex = new Map([...runs.values()].flatMap((run) => run.attempts.map((attempt) => [attempt.attemptId, run.runId] as const)));
@@ -172,9 +202,10 @@ export function createExecutionJournal(directory: string, io: JournalFs = fs) {
     load();
     try {
       validateRun(run);
+      validateAuthorization(run, runs);
       const previous = runs.get(run.runId);
       if (previous) {
-        if (previous.version !== run.version || (previous.version === 2 && run.version === 2 && (JSON.stringify(previous.context) !== JSON.stringify(run.context) || (previous.report !== null && JSON.stringify(previous.report) !== JSON.stringify(run.report)))) || !sameScope(previous.scope, run.scope) || previous.startedAt !== run.startedAt ||
+        if ((previous.version === 3 && run.version === 3 && JSON.stringify(previous.review) !== JSON.stringify(run.review)) || previous.version !== run.version || (previous.version !== 1 && run.version !== 1 && (JSON.stringify(previous.context) !== JSON.stringify(run.context) || (previous.report !== null && JSON.stringify(previous.report) !== JSON.stringify(run.report)))) || !sameScope(previous.scope, run.scope) || previous.startedAt !== run.startedAt ||
             (previous.finishedAt !== null && (previous.finishedAt !== run.finishedAt || previous.attempts.length !== run.attempts.length)) || previous.attempts.length > run.attempts.length) throw new Error("Existing run evidence cannot be replaced");
         for (const [index, before] of previous.attempts.entries()) {
           const after = run.attempts[index];
