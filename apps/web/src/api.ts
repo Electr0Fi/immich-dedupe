@@ -303,6 +303,9 @@ export async function prepareReviewedPlan(scanLimit: number, executeLimit: numbe
 export function cancelReviewedPreparation(preparationId: string) {
   return apiPost<{ ok: true; status: 'finished' | 'cancelling' }>(`/execution/preparations/${encodeURIComponent(preparationId)}/cancel`, {});
 }
+export function selectAllReviewedPlan(planId: string) {
+  return apiPost<ReviewedPlanResponse>(`/execution/plans/${encodeURIComponent(planId)}/select-all`, {});
+}
 export function runReviewedPlan(planId: string, selectedGroupIds: string[], dryRun: boolean) {
   return apiPost<ExecutionRunResponse>(`/execution/plans/${encodeURIComponent(planId)}/run`, { selectedGroupIds, dryRun });
 }

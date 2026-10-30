@@ -417,3 +417,19 @@ test('disconnecting a preparation stream leaves its work and lock active until r
   }
   assert.equal(status, 200); assert.deepEqual(h.mutations, []);
 });
+
+test('select-all endpoint validates requests and returns an expanded review requiring its own dry-run', async (t) => {
+  const base = await serve(t, dependencies(t));
+  const post = (url: string, body: unknown = {}) => fetch(`${base}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const { plan: original } = await (await post('/execution/plans', { scanLimit: 3, executeLimit: 1 })).json();
+  const endpoint = `/execution/plans/${original.planId}/select-all`;
+  assert.equal((await post('/execution/plans/invalid/select-all')).status, 400);
+  assert.equal((await post('/execution/plans/00000000-0000-4000-8000-000000000001/select-all')).status, 410);
+  assert.equal((await post(endpoint, { executeLimit: 999 })).status, 400);
+  const response = await post(endpoint); assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const { plan } = await response.json();
+  assert.equal(plan.executeLimit, 3); assert.notEqual(plan.planId, original.planId);
+  assert.equal(plan.expiresAt, original.expiresAt); assert.deepEqual(plan.candidates, original.candidates);
+  assert.equal((await post(`/execution/plans/${plan.planId}/run`, { selectedGroupIds: plan.candidates.map((c: { groupId: string }) => c.groupId), dryRun: false })).status, 409);
+});

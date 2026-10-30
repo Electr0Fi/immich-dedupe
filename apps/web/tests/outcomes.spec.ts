@@ -364,6 +364,8 @@ test('active runs and closed recovery links offer current facts without repeatin
 test('review compares image metadata and named album changes, requires exact dry-run and resets approval on selection change', async ({ page }) => {
   const state = await fakeApi(page); await openDedupe(page);
   const review = page.getByRole('region', { name: 'Review exactly what will run', exact: true });
+  await expect(review.getByRole('heading', { name: 'Keep', exact: true })).not.toBeVisible();
+  await review.getByRole('button', { name: 'Details for group photos', exact: true }).click();
   await expect(review.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
   await expect(review.getByRole('heading', { name: 'Move to trash', exact: true })).toBeVisible();
   await expect(review.getByText('External library', { exact: true })).toBeVisible();
@@ -399,6 +401,7 @@ test('thumbnail access failures show placeholders without blocking simulation', 
   await fakeApi(page);
   await page.route('**/thumbnail', (route) => route.fulfill({ status: 502, json: { error: 'Thumbnail unavailable' } }));
   await openDedupe(page);
+  await page.getByRole('button', { name: 'Details for group photos', exact: true }).click();
   await expect(page.getByRole('img', { name: 'Thumbnail unavailable for photo.jpg' }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeEnabled();
 });
@@ -577,4 +580,164 @@ test('stream parser rejects missing terminals, malformed events and post-termina
   const terminal = JSON.stringify({ type: 'result', result: { status: 'cancelled', plan: null } }) + '\n';
   await expect(consumeReviewPreparation(streamBody(terminal + terminal), () => undefined)).rejects.toThrow('Unexpected data');
   expect(await consumeReviewPreparation(streamBody(terminal), () => undefined)).toEqual({ type: 'result', result: { status: 'cancelled', plan: null } });
+});
+
+function reviewWithCandidates(executeLimit: number, count: number) {
+  const plan = reviewPlan(100, executeLimit);
+  const first = plan.candidates[0];
+  plan.candidates = Array.from({ length: count }, (_, i) => ({ ...structuredClone(first), groupId: `group-${i}`,
+    keepAsset: { ...first.keepAsset, id: `keeper-${i}`, duplicateId: `group-${i}` },
+    trashAsset: { ...first.trashAsset, id: `loser-${i}`, duplicateId: `group-${i}` },
+    decision: { ...first.decision, groupId: `group-${i}`, keepAssetId: `keeper-${i}`, trashAssetIds: [`loser-${i}`] },
+  }));
+  plan.totalGroups = count + 1; plan.fetchedGroups = count + 1;
+  return plan;
+}
+
+test('Select first follows the entered Execute Limit and Select All explicitly expands the reviewed batch', async ({ page }) => {
+  await fakeApi(page, null);
+  await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await page.getByLabel('Execute Limit', { exact: true }).fill('2');
+  let original = reviewWithCandidates(2, 4);
+  let prepareCalls = 0, selectAllCalls = 0;
+  await page.route('**/execution/plans', (route) => {
+    prepareCalls++;
+    expect(route.request().postDataJSON().executeLimit).toBe(2);
+    original = reviewWithCandidates(2, 4);
+    return route.fulfill({ json: { ok: true, plan: original } });
+  });
+  const expanded = { ...original, planId: attemptId, executeLimit: 4 };
+  await page.route(`**/execution/plans/${runId}/select-all`, (route) => {
+    selectAllCalls++;
+    return route.fulfill({ json: { ok: true, plan: { ...expanded, expiresAt: original.expiresAt } } });
+  });
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Select first 2', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
+  await page.getByRole('button', { name: 'Select first 2', exact: true }).click();
+  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(2);
+  await page.getByRole('button', { name: 'Select All', exact: true }).click();
+  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(4);
+  await expect(page.getByLabel('Execute Limit', { exact: true })).toHaveValue('4');
+  await expect(page.getByRole('button', { name: 'Select first 4', exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Execute Limit increased from 2 to 4' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeEnabled();
+  expect(prepareCalls).toBe(1); expect(selectAllCalls).toBe(1);
+  let dryRunCalls = 0;
+  await page.route(`**/execution/plans/${attemptId}/run`, (route) => {
+    dryRunCalls++;
+    expect(route.request().postDataJSON()).toEqual({ selectedGroupIds: ['group-0', 'group-1', 'group-2', 'group-3'], dryRun: true });
+    const view = runView(); const firstAttempt = view.attempts[0];
+    view.context = { ...view.context!, executeLimit: 4 };
+    view.report = { ...view.report!, eligibleCount: 4, fetchedGroups: 4, excludedGroups: [] };
+    view.attempts = expanded.candidates.map((candidate, i) => ({ ...firstAttempt, attemptId: `attempt-${i}`, groupId: candidate.groupId,
+      result: { ...firstAttempt.result!, groupId: candidate.groupId, keepAssetId: candidate.keepAsset.id, trashAssetId: candidate.trashAsset.id } }));
+    return route.fulfill({ json: { ...executionResponse(view), planId: attemptId } });
+  });
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeEnabled();
+  expect(dryRunCalls).toBe(1);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByLabel('Execute Limit', { exact: true })).toHaveValue('4');
+  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(4);
+  await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
+  await page.getByRole('button', { name: 'Select All', exact: true }).click();
+  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(4);
+  expect(selectAllCalls).toBe(1);
+});
+
+test('Select All clears existing dry-run approval even when every candidate already fits the limit', async ({ page }) => {
+  const state = await fakeApi(page); await openDedupe(page);
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Select All', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: 'Include group photos' })).toBeChecked();
+  await expect(page.getByLabel('Execute Limit', { exact: true })).toHaveValue('5');
+  expect(state.calls.some((call) => call.endsWith('/select-all'))).toBe(false);
+});
+
+test('Select All failure preserves the existing review and selection for an explicit retry', async ({ page }) => {
+  await fakeApi(page, null); await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  const plan = reviewWithCandidates(1, 3);
+  await page.route('**/execution/plans', (route) => route.fulfill({ json: { ok: true, plan } }));
+  await page.route(`**/execution/plans/${runId}/select-all`, (route) => route.fulfill({ status: 409, json: { code: 'execution_busy', error: 'Another request is running' } }));
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await page.getByRole('button', { name: 'Select All', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Another request is running');
+  await expect(page.getByLabel('Execute Limit', { exact: true })).toHaveValue('1');
+  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Select All', exact: true })).toBeEnabled();
+});
+
+test('review groups start collapsed and keyboard toggles reveal only their own details', async ({ page }) => {
+  await fakeApi(page); await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  const plan = reviewWithCandidates(5, 2);
+  await page.route('**/execution/plans', (route) => route.fulfill({ json: { ok: true, plan } }));
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  const first = page.getByRole('article', { name: 'Review group group-0', exact: true });
+  const second = page.getByRole('article', { name: 'Review group group-1', exact: true });
+  const toggle = first.getByRole('button', { name: 'Details for group group-0', exact: true });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(first.getByRole('checkbox')).toBeVisible();
+  await expect(first.getByRole('heading', { name: 'Keep', exact: true })).not.toBeVisible();
+  await toggle.focus(); await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(first.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
+  await expect(second.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+  await expect(second.getByRole('heading', { name: 'Keep', exact: true })).not.toBeVisible();
+  const controls = await toggle.getAttribute('aria-controls');
+  await expect(page.locator(`[id="${controls}"]`)).toBeVisible();
+  await page.keyboard.press('Space');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(first.getByRole('heading', { name: 'Keep', exact: true })).not.toBeVisible();
+  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(2);
+});
+
+test('Expand All and Collapse All include excluded groups without changing selection or dry-run approval', async ({ page }) => {
+  const state = await fakeApi(page); await openDedupe(page);
+  const toggle = page.getByRole('button', { name: 'Details for group photos', exact: true });
+  const excluded = page.getByRole('button', { name: 'Details for group old', exact: true });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(excluded).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  const execute = page.getByRole('button', { name: 'Execute selected', exact: true });
+  await expect(execute).toBeEnabled();
+  const calls = [...state.calls];
+  await page.getByRole('button', { name: 'Expand All', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(excluded).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByText('Already processed', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Collapse All', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(excluded).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByText('Already processed', { exact: true })).not.toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'Include group photos', exact: true })).toBeChecked();
+  await expect(execute).toBeEnabled();
+  // Disclosure changes never submit mutations or preparation/selection requests. Thumbnail reads may load on expansion.
+  expect(state.calls.filter((call) => call.startsWith('POST'))).toEqual(calls.filter((call) => call.startsWith('POST')));
+  await page.getByRole('button', { name: 'Expand All', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await page.route('**/execution/plans', (route) => route.fulfill({ json: { ok: true, plan: { ...reviewPlan(), planId: attemptId } } }));
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('empty reviews disable bulk disclosure controls and small screens retain group toggles', async ({ page }) => {
+  await fakeApi(page); await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  const plan = { ...reviewPlan(), candidates: [], excludedGroups: [] };
+  await page.route('**/execution/plans', (route) => route.fulfill({ json: { ok: true, plan } }));
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Expand All', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Collapse All', exact: true })).toBeDisabled();
+  await page.unroute('**/execution/plans');
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await page.getByRole('button', { name: 'Details for group photos', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Collapse All', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

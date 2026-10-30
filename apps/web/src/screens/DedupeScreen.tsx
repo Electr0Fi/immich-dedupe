@@ -102,8 +102,8 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
   const manualReviewItems =
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
 
-  const buttonsDisabled = execution.busy || execution.preparing || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
-  const activityMessage = execution.busy
+  const buttonsDisabled = execution.busy || execution.preparing || execution.selectingAll || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
+  const activityMessage = execution.selectingAll ? 'Selecting all eligible reviewed groups… Updating Execute Limit.' : execution.busy
     ? execution.request?.dryRun
       ? 'Dry run in progress… No Immich assets will be changed.'
       : 'Execution in progress… Waiting for verified results.'
@@ -130,7 +130,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
               type="number"
               min={1}
               value={scanLimit}
-              disabled={execution.busy || execution.preparing} onChange={(e) => execution.changeLimits({ scanLimit: Number(e.target.value), executeLimit })}
+              disabled={execution.busy || execution.preparing || execution.selectingAll} onChange={(e) => execution.changeLimits({ scanLimit: Number(e.target.value), executeLimit })}
             />
           </label>
 
@@ -140,7 +140,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
               type="number"
               min={1}
               value={executeLimit}
-              disabled={execution.busy || execution.preparing} onChange={(e) => execution.changeLimits({ scanLimit, executeLimit: Number(e.target.value) })}
+              disabled={execution.busy || execution.preparing || execution.selectingAll} onChange={(e) => execution.changeLimits({ scanLimit, executeLimit: Number(e.target.value) })}
             />
           </label>
         </div>

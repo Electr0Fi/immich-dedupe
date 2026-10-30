@@ -628,6 +628,11 @@ export function createApp(dependencies: AppDependencies) {
     if (!z.string().uuid().safeParse(req.params.preparationId).success) return res.status(400).json({ ok: false, error: "Invalid preparation ID" });
     try { res.json(execution.cancelPreparation(req.params.preparationId)); } catch (error) { executionError(res, error); }
   });
+  app.post("/execution/plans/:planId/select-all", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!z.string().uuid().safeParse(req.params.planId).success || !z.object({}).strict().safeParse(req.body ?? {}).success) return res.status(400).json({ ok: false, error: "Invalid select-all request" });
+    try { res.json(await execution.selectAllReviewed(req.params.planId)); } catch (error) { executionError(res, error); }
+  });
   app.post("/execution/plans/:planId/run", async (req, res) => {
     const parsed = ReviewedRunSchema.safeParse(req.body);
     if (!parsed.success || !z.string().uuid().safeParse(req.params.planId).success) return res.status(400).json({ ok: false, error: "Invalid reviewed execution request" });

@@ -287,3 +287,81 @@ test('partial review counts include completed exclusions and cancellation of the
   assert.equal(result.plan?.candidates.length, 0); assert.equal(result.plan?.excludedGroups[0].reason, 'ineligible');
   assert.deepEqual(h.mutations, []);
 });
+
+async function smallReviewWithTwoCandidates(t: TestContext) {
+  const h = setup(t), second = executionHarness('second');
+  h.client.getAllAlbums = async () => [];
+  h.client.getAssetDuplicates = async () => [structuredClone(h.raw), structuredClone(second.raw)];
+  const getAssetInfo = h.client.getAssetInfo;
+  h.client.getAssetInfo = async (args) => args.id.startsWith('second') ? second.client.getAssetInfo(args) : getAssetInfo(args);
+  const resolveDuplicates = h.client.resolveDuplicates;
+  h.client.resolveDuplicates = (args) => args.duplicateResolveDto.groups[0].duplicateId === 'second'
+    ? second.client.resolveDuplicates(args) : resolveDuplicates(args);
+  const { plan } = await h.execution.preparePlan({ scanLimit: 2, executeLimit: 1 });
+  return { ...h, second, plan };
+}
+
+test('select all creates a larger immutable review without extending its deadline or carrying approval', async (t) => {
+  const h = await smallReviewWithTwoCandidates(t);
+  await h.execution.runReviewed(h.plan.planId, { selectedGroupIds: ['group'] });
+  h.advance(60000);
+  const { plan } = await h.execution.selectAllReviewed(h.plan.planId);
+  assert.notEqual(plan.planId, h.plan.planId); assert.equal(plan.executeLimit, 2);
+  assert.equal(plan.expiresAt, h.plan.expiresAt); assert.equal(plan.createdAt, h.plan.createdAt);
+  assert.deepEqual(plan.candidates, h.plan.candidates); assert.deepEqual(plan.excludedGroups, h.plan.excludedGroups);
+  assert.equal(plan.scanLimit, 2); assert.equal(plan.fetchedGroups, 2);
+  assert.equal(h.plan.executeLimit, 1); assert.deepEqual(h.mutations, []); assert.deepEqual(h.second.mutations, []);
+  await assert.rejects(h.execution.runReviewed(h.plan.planId, { selectedGroupIds: ['group', 'second'] }), error(400));
+  await assert.rejects(h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group', 'second'], dryRun: false }), error(409, 'dry_run_required'));
+  const dry = await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['second', 'group'] });
+  assert.equal(dry.executeLimit, 2); assert.deepEqual(dry.results.map((r) => r.groupId), ['group', 'second']);
+  const live = await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group', 'second'], dryRun: false });
+  assert.equal(live.results.length, 2); assert.ok(live.results.every((r) => r.outcome === 'succeeded'));
+  const restored = createExecutionJournal(path.join(h.dir, 'journal'));
+  const saved = restored.run(plan.scope, live.runId!);
+  assert.ok(saved && saved.version === 3); assert.equal(saved.context.executeLimit, 2);
+});
+
+test('expanded selections still reject changed data before any mutation', async (t) => {
+  const h = await smallReviewWithTwoCandidates(t);
+  const { plan } = await h.execution.selectAllReviewed(h.plan.planId);
+  await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group', 'second'] });
+  h.second.assets.get('second-keep')!.isFavorite = true;
+  await assert.rejects(h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group', 'second'], dryRun: false }), error(409, 'plan_changed'));
+  assert.deepEqual(h.mutations, []); assert.deepEqual(h.second.mutations, []);
+});
+
+test('select all enforces identity, scope, lock, expiry and consumption', async (t) => {
+  const h = await smallReviewWithTwoCandidates(t);
+  h.client.getMyUser = async () => ({ id: 'other' });
+  await assert.rejects(h.execution.selectAllReviewed(h.plan.planId), error(409, 'plan_scope_changed'));
+  h.client.getMyUser = async () => { throw { status: 403 }; };
+  await assert.rejects(h.execution.selectAllReviewed(h.plan.planId), error(503, 'identity_unavailable'));
+  h.client.getMyUser = async () => ({ id: 'test-user' });
+  let release!: () => void, entered!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  h.client.getMyUser = async () => { entered(); await wait; return { id: 'test-user' }; };
+  const pending = h.execution.selectAllReviewed(h.plan.planId);
+  await started;
+  await assert.rejects(h.execution.selectAllReviewed(h.plan.planId), error(409, 'execution_busy'));
+  release(); const { plan } = await pending;
+  h.client.getMyUser = async () => ({ id: 'test-user' });
+  await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group', 'second'] });
+  await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group', 'second'], dryRun: false });
+  await assert.rejects(h.execution.selectAllReviewed(plan.planId), error(410));
+  h.advance(900000);
+  await assert.rejects(h.execution.selectAllReviewed(h.plan.planId), error(410));
+});
+
+test('select all preserves partial-review metadata and never lowers an existing larger limit', async (t) => {
+  const h = setup(t);
+  const result = await h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 }, (p) => {
+    if (p.checkedGroups === 1) h.execution.cancelPreparation(p.preparationId);
+  });
+  assert.ok(result.plan);
+  const { plan } = await h.execution.selectAllReviewed(result.plan.planId);
+  assert.equal(plan.executeLimit, 10); assert.deepEqual(plan.preparation, result.plan.preparation);
+  assert.equal(plan.expiresAt, result.plan.expiresAt); assert.deepEqual(plan.candidates, result.plan.candidates);
+  assert.deepEqual(h.mutations, []);
+});

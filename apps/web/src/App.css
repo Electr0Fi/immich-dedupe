@@ -673,7 +673,10 @@ button:focus-visible, summary:focus-visible { outline: 3px solid #1a56db; outlin
 }
 
 .review-candidate { padding: 20px 0; border-top: 1px solid #dde2ea; margin-top: 20px; }
-.review-selection { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.review-candidate-header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.review-selection { display: flex; align-items: center; gap: 10px; margin: 0; }
+.review-details-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; text-align: left; min-width: 0; }
+.review-group-details { padding-top: 16px; }
 .review-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .review-asset { min-width: 0; padding: 16px; border: 1px solid #dde2ea; border-radius: 10px; }
 .review-asset h4 { margin: 0 0 12px; }

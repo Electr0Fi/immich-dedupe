@@ -1,6 +1,6 @@
 import type { ReviewPreparationProgress } from '@immich-dedupe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, getLatestRun, getRun, prepareReviewedPlan, cancelReviewedPreparation, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
+import { ApiError, getLatestRun, getRun, prepareReviewedPlan, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
 
 type Request = { phase: 'pending' | 'unknown' | 'failed'; dryRun: boolean; message: string; runId?: string; partial?: boolean } | null;
 function responseView(result: ExecutionRunResponse, startedAt: string): RunView {
@@ -25,6 +25,8 @@ export function useExecution(open: boolean) {
   const [limits, setLimits] = useState({ scanLimit: 100, executeLimit: 5 });
   const [preparing, setPreparing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [selectionMessage, setSelectionMessage] = useState<string | null>(null);
   const [preparationProgress, setPreparationProgress] = useState<ReviewPreparationProgress | null>(null);
   const [preparationStartedAt, setPreparationStartedAt] = useState<number | null>(null);
   const [progressUpdatedAt, setProgressUpdatedAt] = useState<number | null>(null);
@@ -90,13 +92,37 @@ export function useExecution(open: boolean) {
 
   function changeLimits(next: typeof limits) {
     if (pending.current) return;
-    setLimits(next); setReview(null); setAuthorization(null); setSelected([]); setReviewError(null); setPreparationMessage(null);
+    setLimits(next); setReview(null); setAuthorization(null); setSelected([]); setReviewError(null); setPreparationMessage(null); setSelectionMessage(null);
   }
   function selectGroups(ids: string[]) {
     if (pending.current || !review) return;
     if (ids.length > review.executeLimit) return;
     const ordered = review.candidates.filter((c) => ids.includes(c.groupId)).map((c) => c.groupId);
-    setSelected(ordered); setAuthorization(null);
+    setSelected(ordered); setAuthorization(null); setSelectionMessage(null);
+  }
+  async function selectAll() {
+    if (pending.current || !review || invalid || expired || review.candidates.length === 0) return;
+    if (Date.parse(review.expiresAt) <= Date.now()) { setExpired(true); setAuthorization(null); return; }
+    const ids = review.candidates.map((candidate) => candidate.groupId);
+    if (ids.length <= review.executeLimit) { selectGroups(ids); return; }
+    pending.current = true;
+    const current = ++version.current;
+    setSelectingAll(true); setReading(false); setAuthorization(null); setReviewError(null); setSelectionMessage(null);
+    try {
+      const { plan } = await selectAllReviewedPlan(review.planId);
+      if (!mounted.current || version.current !== current) return;
+      setReview(plan); setSelected(plan.candidates.map((candidate) => candidate.groupId));
+      setLimits({ scanLimit: plan.scanLimit, executeLimit: plan.executeLimit });
+      setExpired(Date.parse(plan.expiresAt) <= Date.now()); setInvalid(false);
+      setSelectionMessage(`Selected all ${plan.candidates.length} eligible groups. Execute Limit increased from ${review.executeLimit} to ${plan.executeLimit}. Complete a new dry-run before execution.`);
+    } catch (error) {
+      if (!mounted.current || version.current !== current) return;
+      setReviewError(error instanceof Error ? error.message : 'All groups could not be selected');
+      if (error instanceof ApiError && ['plan_unavailable', 'plan_scope_changed', 'identity_unavailable'].includes(error.code ?? '')) setInvalid(true);
+    } finally {
+      pending.current = false;
+      if (mounted.current && version.current === current) setSelectingAll(false);
+    }
   }
   async function sendCancellation(session: NonNullable<typeof preparation.current>) {
     if (!session.id || session.sent) return;
@@ -120,7 +146,7 @@ export function useExecution(open: boolean) {
     const current = ++version.current;
     const session = { id: null as string | null, requested: false, sent: false };
     preparation.current = session;
-    setCancelling(false); setPreparationProgress(null); setPreparationMessage(null);
+    setCancelling(false); setPreparationProgress(null); setPreparationMessage(null); setSelectionMessage(null);
     setPreparationStartedAt(Date.now()); setProgressUpdatedAt(Date.now());
     setPreparing(true); setReview(null); setSelected([]); setAuthorization(null); setReviewError(null); setReading(false);
     try {
@@ -141,6 +167,7 @@ export function useExecution(open: boolean) {
       const key = JSON.stringify(value.plan.scope);
       if (scope.current && key !== scope.current) { setRun(null); setPartialRun(null); setRequest(null); }
       scope.current = key;
+      setLimits({ scanLimit: value.plan.scanLimit, executeLimit: value.plan.executeLimit });
       setReview(value.plan); setSelected(value.plan.candidates.slice(0, value.plan.executeLimit).map((c) => c.groupId));
       setInvalid(false); setExpired(Date.parse(value.plan.expiresAt) <= Date.now());
       return value.status;
@@ -187,7 +214,7 @@ export function useExecution(open: boolean) {
         runId: error instanceof ApiError ? error.runId : undefined, partial: error instanceof ApiError && Boolean(error.partialExecution) });
     } finally { pending.current = false; }
   }
-  return { review, selected, limits, preparing, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
+  return { review, selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
     prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
     run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }

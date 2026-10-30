@@ -302,6 +302,20 @@ export function createExecutionService(deps: {
       return { ok: true as const, plan: result.plan! };
     },
     preparePlanStream: prepareReview,
+    selectAllReviewed(planId: string) {
+      return exclusive(async (_, scope) => {
+        const entry = plans.get(planId);
+        if (!entry) throw new ExecutionServiceError(410, "plan_unavailable", "Review expired or is unavailable");
+        if (!sameScope(entry.plan.scope, scope)) throw new ExecutionServiceError(409, "plan_scope_changed", "The Immich connection changed");
+        const plan = entry.plan;
+        // Keep the reviewed snapshot and its deadline; never carry dry-run authorization to a new plan.
+        return { ok: true as const, plan: plans.put({
+          scope: plan.scope, scanLimit: plan.scanLimit, executeLimit: Math.max(plan.executeLimit, plan.candidates.length),
+          fetchedGroups: plan.fetchedGroups, totalGroups: plan.totalGroups, candidates: plan.candidates,
+          excludedGroups: plan.excludedGroups, ...(plan.preparation ? { preparation: plan.preparation } : {}),
+        }, { createdAt: plan.createdAt, expiresAt: plan.expiresAt }) };
+      });
+    },
     cancelPreparation(preparationId: string) {
       const state = preparations.get(preparationId);
       if (!state || (state.finished && now() - state.updatedAt >= 15 * 60 * 1000)) throw new ExecutionServiceError(404, "preparation_not_found", "Review preparation is no longer available");

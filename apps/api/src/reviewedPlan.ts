@@ -68,11 +68,11 @@ export function createReviewedPlanStore(now: () => number) {
   const plans = new Map<string, PlanEntry>();
   function purge() { for (const [id, entry] of plans) if (Date.parse(entry.plan.expiresAt) <= now()) plans.delete(id); }
   return {
-    put(input: Omit<ReviewedPlan, "planId" | "createdAt" | "expiresAt">) {
+    put(input: Omit<ReviewedPlan, "planId" | "createdAt" | "expiresAt">, lifetime?: Pick<ReviewedPlan, "createdAt" | "expiresAt">) {
       purge();
       while (plans.size >= PLAN_CAPACITY) plans.delete(plans.keys().next().value!);
       const created = now();
-      const plan: ReviewedPlan = { planId: randomUUID(), createdAt: new Date(created).toISOString(), expiresAt: new Date(created + PLAN_TTL_MS).toISOString(), ...structuredClone(input) };
+      const plan: ReviewedPlan = { planId: randomUUID(), createdAt: lifetime?.createdAt ?? new Date(created).toISOString(), expiresAt: lifetime?.expiresAt ?? new Date(created + PLAN_TTL_MS).toISOString(), ...structuredClone(input) };
       plans.set(plan.planId, { plan, authorization: null });
       return structuredClone(plan);
     },
