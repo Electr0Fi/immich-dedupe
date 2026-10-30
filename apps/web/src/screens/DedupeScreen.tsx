@@ -200,9 +200,9 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         )}
       </section>
 
-      <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
-
       <ReviewedBatch execution={execution} />
+
+      <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
 
       <section className="card">
         <h2>Manual Review</h2>
