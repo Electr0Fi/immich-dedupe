@@ -6,7 +6,7 @@ Applies to the entire repository. Reviewed against source on 2026-10-30.
 
 Read [PROJECT_GUIDE.md](PROJECT_GUIDE.md) for the detailed architecture, HTTP route inventory, operations workflow, and review findings. This file contains the essential instructions for working on the project. Confirm behavior against source before editing; update both documents when relevant behavior changes.
 
-The root README is incomplete and predates the dashboard. `apps/web/README.md` is template documentation. `CLAUDE.md` contains additional conventions. Credential isolation describes intended design, not current implementation; see the known settings limitation below.
+The root README and Welcome Current Functionality card describe the current release. `apps/web/README.md` is template documentation. `CLAUDE.md` contains additional conventions. Credential isolation describes intended design, not current implementation; see the known settings limitation below.
 
 ## Purpose and architecture
 
@@ -70,13 +70,14 @@ Build output goes to `apps/web/dist` and `apps/api/dist`. There is no API `start
 - Put shared domain contracts in `packages/shared`. Frontend response types currently duplicate contracts; keep both sides consistent when changing an endpoint.
 - Prefer explicit TypeScript types over `any`. Backend/packages inherit strict mode; the frontend has separate compiler configuration and does not inherit the root strict option.
 - Use the existing React components and plain CSS unless the task requires an architectural change. Navigation uses component state, without a router or persistent preferences store.
+- Any PR changing user-visible functionality or operational guarantees must review and update the Welcome page’s Current Functionality card, README.md’s matching section, and PROJECT_GUIDE.md together. Describe implemented behavior only and remove obsolete limitations as improvements land.
 - Distinguish implemented behavior from UI placeholders and known defects. Do not describe a setting or guard as enforced unless its execution path actually uses it.
 
 ## Duplicate rules and execution requirements
 
 Pipeline: fetch Immich duplicate groups -> take the scan window -> normalize -> enrich file sizes -> enrich album memberships -> evaluate rules -> preview/dry-run/execute -> log batch results.
 
-Automatic resolution currently requires exactly two assets, neither edited nor trashed, matching trimmed case-insensitive filenames, known equal width and height, one external and one internal asset, and both file sizes known with the external strictly larger. It keeps external, selects one internal loser, and assigns confidence 100. Confidence is a fixed rule score, not probability. Missing sizes yield uncertain/40 for an otherwise matching pair. Matching names with unequal or missing dimensions yield skip/0. Other groups yield uncertain/10. Rules run in order, first match wins; checksums are stored but not compared.
+Automatic resolution currently requires exactly two unlinked images, with edited/trashed/favorite/archive/offline flags explicitly false, matching trimmed case-insensitive filenames, known equal width and height, one external and one internal asset, and both file sizes known with the external strictly larger. It keeps external, selects one internal loser, and assigns confidence 100. Confidence is a fixed rule score, not probability. Missing sizes yield uncertain/40 for an otherwise matching pair. Matching names with unequal or missing dimensions yield skip/0. Other groups yield uncertain/10. Rules run in order, first match wins; checksums are stored but not compared.
 
 Preserve these safety requirements when changing execution:
 
@@ -84,23 +85,24 @@ Preserve these safety requirements when changing execution:
 - Require a valid keep asset and one distinct trash asset present in a two-asset external/internal group, with an auto-resolve decision at confidence 100.
 - Transfer the kept asset into missing loser albums **before** duplicate resolution.
 - Use SDK `resolveDuplicates`, corresponding to Immich `POST /duplicates/resolve`. Never substitute `deleteDuplicate` / `DELETE /duplicates/:id` for asset cleanup.
-- Verify the losing asset's trash state; a returned asset can still exist while `isTrashed === true`. Treat the existing exception-to-success behavior below as a defect, not an intended guarantee.
+- Require explicit album-add and resolution success, confirmed keeper membership in required albums, and verification of loser `isTrashed === true` / `duplicateId === null` plus an untrashed keeper. Read failures or missing fields are never success. Verify at most three times with one-second intervals; never automatically retry mutations.
 - Keep `scanLimit` separate from `executeLimit`: scan selects the first N groups, with no pagination; execute caps attempted eligible groups, including failures and dry-runs. Backend defaults are 100/10, UI defaults 100/5. Legacy `limit` supplies both defaults when present.
-- Both execution POST routes enable simulation only with literal JSON `"dryRun": true`. Missing, false, or string values select live execution. Dry-run must not mutate Immich; batch dry-runs may append local audit entries.
+- Both execution POST routes and internal executors default to dry-run. Only literal JSON `"dryRun": false` opts into live execution. Reject non-boolean modes and supplied limits that are not positive safe integers with HTTP 400. Dry-run must not mutate Immich; batch dry-runs may append local audit entries.
+- Refetch group membership, both assets and current albums before execution, bypass cached sizes, and re-evaluate the same selection. Stop batches on failed or uncertain attempts. Return proposed albums separately from confirmed transfers, retain partial evidence, and never report `executed: true` without fully verified success.
 - Do not run live resolution merely to validate a code or documentation edit. Use local checks and explicit dry-runs within the task's authorized scope; execute live changes only when the user requests them.
 
 Main routes: `/health`, `/immich/test`, `/immich/duplicates` and enrichment/debug variants, `/analysis/duplicates`, `/execution/plan`, `/execution/status`, `POST /execution/run`, single-group preview/execution under `/execution/duplicates/:groupId`, `/execution/log` with JSON/CSV exports and clear action, and `/settings/*`. Consult `PROJECT_GUIDE.md` or `app.ts` for precise contracts. Inspect per-group results even when HTTP status and top-level `ok` indicate success. `/health` tests backend liveness, not Immich connectivity.
 
 ## Persistence, caches, and current limitations
 
-- The active execution log is **`apps/api/data/execution-log.json`**, derived from `__dirname` in `executionLog.ts`, and ignored by Git. Tracked logs at the repository root and `apps/api/execution-log.json` are unused by the current logger. Do not confuse them or overwrite runtime logs during routine development.
+- The active execution log is **`apps/api/data/execution-log.json`**, selected from `__dirname` in the startup entry point, and ignored by Git. Tracked logs at the repository root and `apps/api/execution-log.json` are unused by the current logger. Do not confuse them or overwrite runtime logs during routine development.
 - Only live entries with `executed`, `resolvedDuplicate`, and `trashedAsset` all true count as processed. Clearing logs also clears this tracking and does not undo Immich changes.
-- Batch execution skips processed IDs, runs sequentially, and delays 50 ms after non-throwing attempts. Single-group execution bypasses batch logging and processed-ID checks. Plan/status counts do not exclude processed IDs.
+- Batch execution skips processed IDs, runs sequentially, delays 50 ms after successful/dry-run attempts, and stops after the first failure or uncertainty. Single-group execution bypasses batch logging and processed-ID checks. Plan/status counts do not exclude processed IDs.
 - File sizes are cached in an app-scoped map, including nulls, with no expiry. Source flags come from hardcoded path prefixes in `classifySource.ts`, not `libraryId`. Unknown paths cannot qualify. Check these assumptions when diagnosing zero eligible groups.
 - Asset enrichment uses unbounded `Promise.all`; album enrichment reads all visible albums and their full assets on every request. Dedupe refresh independently requests status, plan, and analysis concurrently, repeating this work.
 - Frontend Dedupe caches survive screen changes but are not keyed by scan limit. Refresh after changing limits. Live execution recalculates decisions, rather than executing a saved immutable preview.
 - The logger rewrites the full JSON file synchronously, treats unreadable/invalid JSON as an empty log, and has no schema validation or atomic replacement. There is no execution lock, rollback, transaction, or durable job queue. Failures can follow partial Immich changes.
-- `verifyAssetIsTrashed` currently treats any asset-fetch exception as success; it does not verify `duplicateId === null` or keeper state. Album-add responses are awaited without per-item result verification. Account for these defects before relying on success flags.
+- Outcomes distinguish `dry-run`, `succeeded`, `failed` and `needs-verification`, with a failure stage and proposed/confirmed albums. New batch logs/exports include these fields; historical entries remain unchanged. There is still no durable retry quarantine or automatic recovery. Investigate uncertain outcomes before retrying.
 - The API has no authentication, unrestricted CORS, and no explicit loopback-only binding. `GET /settings/connection` currently returns the raw Immich key to the browser, contrary to the desired credential-isolation convention. Do not expand credential exposure or place secrets in logs/docs/bundles.
 - Connection saving checks truthiness and writes unquoted values directly to `.env`; it neither fully validates values nor reinitializes runtime configuration.
 - Settings' confirmation toggle works in browser memory only. Other safety controls are disabled placeholders. Performance controls affect component state/diagnostics only, not backend behavior. The displayed cache directory is a placeholder. Reset Local Cache clears only frontend cached scans. Clear Credentials clears only the form, not saved or active credentials.
@@ -110,7 +112,7 @@ Main routes: `/health`, `/immich/test`, `/immich/duplicates` and enrichment/debu
 
 Run checks appropriate to the files changed. For backend/rule/contract changes, use the API typecheck; for frontend changes, use its explicit `tsc -b` check or build. Use `pnpm build` for integration/build changes. For behavior changes, verify meaningful success and failure cases without mutating a real library as an incidental check. Tests live in `apps/api/tests`, including rule-engine coverage. The runner uses the API-local `tsx` dependency. HTTP tests listen on an ephemeral loopback port. All Immich/settings dependencies are fakes, and log tests use auto-cleaned temporary directories. Never point tests at production credentials or runtime log files.
 
-PR 1 adds real workspace typechecking and resolves the frontend Hooks/Fast Refresh findings without disabling rules. Root lint deliberately checks the frontend only; backend lint remains unconfigured, and standalone package builds remain placeholders. API `tsconfig.check.json` includes tests, while the build configuration emits only application sources. Three pending safety tests document the verification-fetch and partial SDK-response defects for PR 2; do not treat pending cases as passing guarantees.
+PR 1 adds real workspace typechecking and resolves the frontend Hooks/Fast Refresh findings without disabling rules. Root lint deliberately checks the frontend only; backend lint remains unconfigured, and standalone package builds remain placeholders. API `tsconfig.check.json` includes tests, while the build configuration emits only application sources. PR 2 replaces the pending safety tests with executable failure-path tests, including metadata protections, stale data, album confirmation, response validation, bounded verification and batch stopping.
 
 Report what changed, which checks actually ran, their results, and any unverified behavior. Do not claim live Immich compatibility or successful trash/album behavior based solely on compilation. Keep this file concise enough for routine loading; keep detailed route descriptions and extended operational explanations in `PROJECT_GUIDE.md`.
 

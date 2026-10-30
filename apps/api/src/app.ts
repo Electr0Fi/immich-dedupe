@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { ExecutionRequestSchema } from "./executionRequest";
 
 import { normalizeDuplicates } from "./normalizeDuplicates";
 import { createAssetInfoEnricher } from "./enrichWithAssetInfo";
@@ -48,28 +49,6 @@ export function createApp(dependencies: AppDependencies) {
     }
 
     return parsed;
-  }
-
-  function parseExecutionLimits(body: any): {
-    scanLimit: number;
-    executeLimit: number;
-  } {
-    const legacyLimit = parsePositiveLimit(body?.limit, 10);
-
-    const scanLimit = parsePositiveLimit(
-      body?.scanLimit,
-      body?.limit ? legacyLimit : 100
-    );
-
-    const executeLimit = parsePositiveLimit(
-      body?.executeLimit,
-      body?.limit ? legacyLimit : 10
-    );
-
-    return {
-      scanLimit,
-      executeLimit,
-    };
   }
 
   function unique<T>(items: T[]): T[] {
@@ -140,12 +119,12 @@ export function createApp(dependencies: AppDependencies) {
     };
   }
 
-  function escapeCsvValue(value: string | boolean | null): string {
-    if (value === null) {
+  function escapeCsvValue(value: string | boolean | string[] | null | undefined): string {
+    if (value == null) {
       return "";
     }
 
-    const text = String(value);
+    const text = Array.isArray(value) ? JSON.stringify(value) : String(value);
 
     if (/[",\r\n]/.test(text)) {
       return `"${text.replace(/"/g, '""')}"`;
@@ -165,6 +144,11 @@ export function createApp(dependencies: AppDependencies) {
       "resolvedDuplicate",
       "trashedAsset",
       "message",
+      "outcome",
+      "failureStage",
+      "proposedAlbumIds",
+      "transferredAlbumIds",
+      "skippedAlbumIds",
     ];
 
     const rows = [
@@ -720,7 +704,9 @@ export function createApp(dependencies: AppDependencies) {
   app.post("/execution/duplicates/:groupId", async (req, res) => {
     try {
       const groupId = req.params.groupId;
-      const dryRun = req.body?.dryRun === true;
+      const parsed = ExecutionRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid execution request", issues: parsed.error.issues });
+      const { dryRun } = parsed.data;
 
       const duplicates = await getAssetDuplicates({});
       const rawGroups = Array.isArray(duplicates) ? duplicates : [];
@@ -770,8 +756,9 @@ export function createApp(dependencies: AppDependencies) {
 
   app.post("/execution/run", async (req, res) => {
     try {
-      const { scanLimit, executeLimit } = parseExecutionLimits(req.body);
-      const dryRun = req.body?.dryRun === true;
+      const parsed = ExecutionRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid execution request", issues: parsed.error.issues });
+      const { scanLimit, executeLimit, dryRun } = parsed.data;
 
       const duplicates = await getAssetDuplicates({});
       const rawGroups = Array.isArray(duplicates) ? duplicates : [];
@@ -788,13 +775,14 @@ export function createApp(dependencies: AppDependencies) {
           isExecutableDecision(decision) && !processedGroupIds.has(decision.groupId)
       ).length;
 
-      const results = await executePlan(
+      const batch = await executePlan(
         withAlbums.groups,
         decisions,
         executeLimit,
         dryRun
       );
 
+      const { results, stoppedEarly, stopReason } = batch;
       const actuallyExecutedCount = results.filter((result) => result.executed).length;
       const resolvedCount = results.filter(
         (result) => result.resolvedDuplicate
@@ -809,6 +797,8 @@ export function createApp(dependencies: AppDependencies) {
         fetchedGroups: slicedGroups.length,
         eligibleCount,
         actuallyExecutedCount,
+        stoppedEarly,
+        stopReason,
         resolvedCount,
         trashedCount,
         results,

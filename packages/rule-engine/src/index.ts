@@ -5,8 +5,8 @@ import type {
 } from "@immich-dedupe/shared";
 
 function sameResolution(a: AssetRecord, b: AssetRecord): boolean {
-  return a.width != null &&
-    a.height != null &&
+  return a.width != null && a.width > 0 && Number.isFinite(a.width) &&
+    a.height != null && a.height > 0 && Number.isFinite(a.height) &&
     b.width != null &&
     b.height != null &&
     a.width === b.width &&
@@ -14,22 +14,30 @@ function sameResolution(a: AssetRecord, b: AssetRecord): boolean {
 }
 
 function sameFileName(a: AssetRecord, b: AssetRecord): boolean {
-  return a.fileName.trim().toLowerCase() === b.fileName.trim().toLowerCase();
+  return a.fileName.trim().length > 0 &&
+    a.fileName.trim().toLowerCase() === b.fileName.trim().toLowerCase();
+}
+
+function isSafeCandidate(asset: AssetRecord): boolean {
+  return asset.assetType === "IMAGE" &&
+    asset.isEdited === false && asset.isTrashed === false &&
+    asset.isFavorite === false && asset.isArchived === false && asset.isOffline === false &&
+    asset.livePhotoVideoId === null;
 }
 
 function isSafeCandidatePair(a: AssetRecord, b: AssetRecord): boolean {
-  return !a.isEdited && !b.isEdited && !a.isTrashed && !b.isTrashed;
+  return isSafeCandidate(a) && isSafeCandidate(b);
 }
 
 function chooseExternalVsInternal(
   a: AssetRecord,
   b: AssetRecord
 ): { keep: AssetRecord; trash: AssetRecord } | null {
-  if (a.isExternal && b.isInternal) {
+  if (a.isExternal && !a.isInternal && b.isInternal && !b.isExternal) {
     return { keep: a, trash: b };
   }
 
-  if (b.isExternal && a.isInternal) {
+  if (b.isExternal && !b.isInternal && a.isInternal && !a.isExternal) {
     return { keep: b, trash: a };
   }
 
@@ -66,7 +74,8 @@ function ruleExternalLargerSameNameSameResolution(
     return null;
   }
 
-  if (pair.keep.fileSize <= pair.trash.fileSize) {
+  if (!Number.isFinite(pair.keep.fileSize) || !Number.isFinite(pair.trash.fileSize) ||
+      pair.keep.fileSize <= 0 || pair.trash.fileSize <= 0 || pair.keep.fileSize <= pair.trash.fileSize) {
     return null;
   }
 
@@ -80,7 +89,7 @@ function ruleExternalLargerSameNameSameResolution(
     matchedRuleName: "Keep external when larger, same filename, same resolution",
     reasons: [
       "Exactly 2 assets in duplicate group",
-      "Neither asset is edited or trashed",
+      "Both assets are images with complete safety metadata and no protected flags or Live Photo link",
       "Filenames match",
       "Resolution matches",
       "One asset is external and the other is internal",
@@ -182,6 +191,12 @@ function defaultUncertain(group: DuplicateGroup): DuplicateDecision {
 }
 
 export function evaluateDuplicateGroup(group: DuplicateGroup): DuplicateDecision {
+  if (group.assets.some((asset) => !isSafeCandidate(asset))) {
+    return {
+      ...defaultUncertain(group),
+      reasons: ["Automatic cleanup requires images with complete safety metadata; favorites, archived/offline, edited/trashed and linked Live Photo assets are excluded"],
+    };
+  }
   const rules = [
     ruleExternalLargerSameNameSameResolution,
     ruleSameNameSameResolutionButMissingSize,

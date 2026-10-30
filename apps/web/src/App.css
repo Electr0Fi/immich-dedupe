@@ -541,3 +541,25 @@ input[type='checkbox'] {
     padding: 16px;
   }
 }
+
+/* Release-maintained capability overview on Welcome. */
+.current-functionality h3 {
+  margin: 20px 0 8px;
+  font-size: 14px;
+  color: #172033;
+}
+
+.current-functionality ul {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.7;
+}
+
+.current-functionality li + li {
+  margin-top: 8px;
+}
+
+.execution-results-table {
+  max-width: 100%;
+  overflow-x: auto;
+}

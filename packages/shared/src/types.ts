@@ -18,8 +18,13 @@ export type AssetRecord = {
   deviceId: string | null;
   deviceAssetId: string | null;
   libraryId: string | null;
-  isEdited: boolean;
-  isTrashed: boolean;
+  assetType: string | null;
+  isEdited: boolean | null;
+  isTrashed: boolean | null;
+  isFavorite: boolean | null;
+  isArchived: boolean | null;
+  isOffline: boolean | null;
+  livePhotoVideoId: string | null;
   isExternal: boolean;
   isInternal: boolean;
   fileSize: number | null;
@@ -83,7 +88,19 @@ export type ExecutionPlan = {
 
 export type ExecutionMode = "dry-run" | "execute";
 
+export type ExecutionOutcome = "dry-run" | "succeeded" | "failed" | "needs-verification";
+export type ExecutionFailureStage = "preflight" | "album-transfer" | "album-verification" | "resolution" | "verification";
+
+export type ExecutionBatchResult = {
+  results: ExecutionResult[];
+  stoppedEarly: boolean;
+  stopReason: string | null;
+};
+
 export type ExecutionResult = {
+  outcome: ExecutionOutcome;
+  failureStage: ExecutionFailureStage | null;
+  proposedAlbumIds: string[];
   groupId: string;
   mode: ExecutionMode;
 

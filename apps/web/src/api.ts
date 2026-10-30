@@ -37,7 +37,15 @@ export type ExecutionStatusResponse = {
   lastExecutionEntry: ExecutionLogEntry | null;
 };
 
+export type ExecutionOutcome = 'dry-run' | 'succeeded' | 'failed' | 'needs-verification';
+export type ExecutionFailureStage = 'preflight' | 'album-transfer' | 'album-verification' | 'resolution' | 'verification';
+
 export type ExecutionLogEntry = {
+  outcome?: ExecutionOutcome;
+  failureStage?: ExecutionFailureStage | null;
+  proposedAlbumIds?: string[];
+  transferredAlbumIds?: string[];
+  skippedAlbumIds?: string[];
   timestamp: string;
   groupId: string;
   mode: "dry-run" | "execute";
@@ -72,6 +80,8 @@ export type DuplicateAnalysisResponse = {
 };
 
 export type ExecutionRunResponse = {
+  stoppedEarly: boolean;
+  stopReason: string | null;
   ok: boolean;
   dryRun: boolean;
   scanLimit: number;
@@ -103,6 +113,9 @@ export type ExecutionPlanResponse = {
 };
 
 export type ExecutionResult = {
+  outcome: ExecutionOutcome;
+  failureStage: ExecutionFailureStage | null;
+  proposedAlbumIds: string[];
   groupId: string;
   mode: "dry-run" | "execute";
   executed: boolean;

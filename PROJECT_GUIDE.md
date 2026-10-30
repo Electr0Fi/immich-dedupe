@@ -8,7 +8,7 @@ Immich Dedupe is a local web application for resolving duplicate groups already 
 
 The backend, deterministic rules, batch executor, React dashboard, plan preview, and execution logs are implemented. Manual review currently means displaying uncertain/skipped decisions, with no manual choice or resolution controls. History is a placeholder. There are no thumbnails, configurable rules, database, CI workflow, container setup, or packaged deployment in the tracked repository.
 
-The root README is unfinished and predates the current dashboard. `apps/web/README.md` is Vite template documentation. `CLAUDE.md` provides project conventions; credential isolation remains a desired property rather than the current settings behavior.
+The root README and Welcome page’s Current Functionality card describe the current release together. `apps/web/README.md` is Vite template documentation. `CLAUDE.md` provides project conventions; credential isolation remains a desired property rather than the current settings behavior.
 
 ## Repository map
 
@@ -107,11 +107,11 @@ React dashboard -> Express API -> Immich SDK / Immich server
                     apps/api/data/execution-log.json
 ```
 
-Normalization preserves IDs, filenames, paths, timestamps, dimensions, checksums, source flags, edited/trashed flags, and initializes empty album memberships and null file sizes. Dimensions fall back to EXIF values. Missing edited/trashed flags default to false. Checksums and timestamps are stored but are not compared by the rules.
+Normalization preserves IDs, filenames, paths, timestamps, dimensions, checksums, source flags, edited/trashed flags, and initializes empty album memberships and null file sizes. Dimensions fall back to EXIF values. Missing safety flags remain null (unknown), never false. Records include media type, favorite/archive/offline flags, and Live Photo linkage; the rule engine requires complete negative safety flags and unlinked images. Checksums and timestamps are stored but are not compared by the rules.
 
 Source classification uses hardcoded prefixes in `classifySource.ts`, not `libraryId` or a server-provided external flag. Recognized external paths include `/external/`, `/mnt/external/`, and `/photos/external/`. Internal paths include `/usr/src/app/upload/`, `/photos/internal/`, `/data/internal/`, and `/data/library/admin/`. Unknown paths produce both flags false and cannot qualify for automatic resolution. Paths are lowercased before matching; an extra mixed-case external prefix is redundant. Check actual Immich paths when troubleshooting zero eligible groups.
 
-File sizes come from `getAssetInfo().exifInfo.fileSizeInByte`, accepting finite numbers or numeric strings. An app-scoped map caches sizes, including null values, with no expiry. Asset/group enrichment uses `Promise.all` without a concurrency limit. Album enrichment fetches every visible album and then its full assets sequentially, rebuilding the index for each request. An enrichment request failure aborts that request.
+File sizes come from `getAssetInfo().exifInfo.fileSizeInByte`, accepting finite numbers or numeric strings. An app-scoped map caches sizes, including null values, with no expiry. Preview asset/group enrichment uses `Promise.all` without a concurrency limit. Execution bypasses cached sizes and reads both selected assets afresh. Album enrichment fetches every visible album and then its full assets sequentially, rebuilding the index for each request. An enrichment request failure aborts that request.
 
 ## Decision rules
 
@@ -119,24 +119,27 @@ Rules run in order; the first match wins. Confidence is a fixed rule score, not 
 
 | Rule | Conditions and result |
 | --- | --- |
-| External larger, same name/resolution | Exactly two assets; neither edited nor trashed; trimmed case-insensitive filenames match; both width and height are known and equal; one external and one internal; both sizes known; external strictly larger. Keep external, trash internal, `auto-resolve`, confidence 100. |
+| External larger, same name/resolution | Exactly two unlinked images; edited/trashed/favorite/archive/offline flags are explicitly false; trimmed case-insensitive filenames match; both width and height are known and equal; one external and one internal; both sizes known; external strictly larger. Keep external, trash internal, `auto-resolve`, confidence 100. |
 | Missing size | Same pair/name/resolution/safety conditions, but either size absent. `uncertain`, confidence 40, no asset selections. |
 | Different resolution | Exactly two assets with matching filenames for which the equal-known-dimensions check fails. `skip`, confidence 0. Missing dimensions also land here, despite the displayed reason saying resolution differs. |
+| Protected or unknown metadata | Non-images, Live Photo links, any protected safety flag, or unknown required flags yield `uncertain`, confidence 10; evaluated before other rules. |
 | Default | Everything else, including larger groups and equal-sized pairs. `uncertain`, confidence 10. |
 
 The engine is pure and makes no network calls. New rules belong in `packages/rule-engine`, with data contracts in `packages/shared`. The web package currently duplicates response types rather than importing shared contracts.
 
 ## Execution semantics and persistence
 
-`scanLimit` chooses the first N groups from the server response; it is not pagination. `executeLimit` caps attempted eligible groups, including failed attempts and dry-run results. Batch defaults are scan 100 / execute 10; UI defaults are scan 100 / execute 5. Legacy request field `limit` supplies both defaults when provided. Limit parsing accepts positive finite numbers but does not enforce integers or a maximum.
+`scanLimit` chooses the first N groups from the server response; it is not pagination. `executeLimit` caps attempted eligible groups, including failed attempts and dry-run results. Batch defaults are scan 100 / execute 10; UI defaults are scan 100 / execute 5. Legacy request field `limit` supplies both defaults when provided. Both execution POST bodies are validated with Zod. Supplied limits must be positive safe integers; strings, nulls, zero, negative and fractional limits return HTTP 400. Explicit limits independently override the legacy fallback. Read-only query endpoints retain their existing permissive limit parser.
 
 The executor requires exactly two assets, one external and one internal, an `auto-resolve` decision with confidence 100, one trash ID, distinct keep/trash IDs, and both selected assets present. Batch execution skips group IDs recorded as successful live executions. Decisions and groups are paired by array index.
 
-Dry-run performs reads and safety checks but does not mutate Immich. It reports missing album memberships in `transferredAlbumIds` as proposed transfers; those have not actually occurred. Batch dry-runs still append local audit entries.
+Dry-run is the default for both execution routes and internal executors. It rechecks group/asset eligibility and current albums but does not mutate Immich. `proposedAlbumIds` reports proposed transfers; `transferredAlbumIds` stays empty. Batch dry-runs still append local audit entries.
 
-Live execution adds the kept asset to albums held only by the loser, calls SDK `resolveDuplicates` (Immich `POST /duplicates/resolve`), then checks the losing asset. Preserve this operation ordering. Do not replace duplicate resolution with Immich `DELETE /duplicates/:id`, which is not the intended asset-cleanup operation.
+Before either dry-run or live execution, the executor refetches duplicate membership and both selected assets, requires the same two IDs and group associations, reads uncached sizes, and re-evaluates the same keeper/loser selection. Asset-filtered default and shared-album queries provide current visible memberships. Missing or malformed required data fails preflight.
 
-Batch work is sequential with a fixed 50 ms delay after non-throwing attempts. Per-group exceptions become failure results and processing continues. Successful live entries require `mode === "execute"` and all of `executed`, `resolvedDuplicate`, and `trashedAsset` true to enter processed tracking.
+Live execution adds the kept asset to missing loser albums once, requires `success === true`, and rereads affected album details to confirm membership. Existing overlapping keeper memberships are checked too. Only then does it call SDK `resolveDuplicates` (Immich `POST /duplicates/resolve`) once. A nonempty response with successful items and no reported error is required. The loser must be confirmed `isTrashed === true` with `duplicateId === null`, and the keeper must be confirmed untrashed. Verification has at most three rounds, one second apart. Exceptions, 404s and missing fields are never success. Mutations are not retried. Preserve this operation ordering. Do not replace duplicate resolution with Immich `DELETE /duplicates/:id`, which is not the intended asset-cleanup operation.
+
+Batch work is sequential with a fixed 50 ms delay after successful or dry-run attempts. The first failed/uncertain attempt stops processing and returns `stoppedEarly: true` with `stopReason`. Failed attempts still count toward `executeLimit`. An audit-write failure also stops further work while retaining returned results. Successful live entries require `mode === "execute"` and all of `executed`, `resolvedDuplicate`, and `trashedAsset` true to enter processed tracking.
 
 The active log is **`apps/api/data/execution-log.json`**, selected in startup relative to `src` or `dist` through `__dirname`. It is ignored by Git. Tracked `execution-log.json` files at the repository root and `apps/api/` are not read by the current logger; the older `src/execution-log.json` location is no longer used. Tests inject a temporary log path. JSON reads/writes are synchronous and rewrite the entire file. Missing or invalid JSON reads as an empty log; there is no schema validation, database, rotation, or atomic replacement.
 
@@ -171,7 +174,9 @@ All routes are defined in `apps/api/src/app.ts`. Importing it does not load envi
 | POST | `/settings/connection` | Write `{ immichUrl, apiKey }` to backend `.env` |
 | POST | `/settings/test-connection` | Test supplied URL/key against `/server/about` |
 
-For both execution POST routes, **only literal JSON `true` enables dry-run**. Missing `dryRun`, false, or the string `"true"` selects live execution.
+For both execution POST routes, **omitted `dryRun` defaults to true**. Only literal JSON `false` opts into live execution; strings, nulls and other non-boolean modes return HTTP 400.
+
+`ExecutionResult` adds `outcome` (`dry-run`, `succeeded`, `failed`, `needs-verification`), `failureStage` (preflight, album-transfer, album-verification, resolution, verification), and `proposedAlbumIds`. `executed` is true only on fully verified success. Other booleans represent positive evidence, not inferred success. A submitted mutation followed by ambiguity yields `needs-verification`; confirmed partial transfers remain in `transferredAlbumIds`. Batch logs and JSON/CSV exports include these details. Historical records retain their original shape and display as legacy entries.
 
 Example checks after starting the API:
 
@@ -196,23 +201,27 @@ Settings implementation details:
 
 - Test Connection tests and then saves the credentials. It does not reinitialize the running SDK, and does not inspect a save response's `ok` flag before showing success.
 - Require confirmation is the only enabled safety toggle, held in shell memory. It gates the browser confirm dialog, not backend authorization.
-- Other safety toggles are disabled placeholders. The checked dry-run default does not enforce a backend default; the explicit Execute button sends `dryRun: false`.
+- Other safety toggles remain disabled placeholders; backend code independently enforces eligibility and a default dry-run. The explicit Execute button sends `dryRun: false`.
 - Performance inputs only change component state and diagnostic exports. They do not configure batch size, API concurrency, delay, or caches, and reset when Settings unmounts.
 - The displayed `~/.immich-dedupe/cache` path is a placeholder. Actual caches are in browser-module memory and the app-scoped backend file-size map.
 - Reset Local Cache clears the frontend module cache only. It does not clear backend file sizes.
 - Clear Credentials only clears the current form state. It does not erase `.env` or active SDK credentials.
 - Diagnostics exports the current form/preferences and omits the API key.
 
-## Review findings to account for before execution changes
+## Current Functionality and remaining limitations
 
-These are observations of existing code, not fixes made by this review:
+The Welcome page includes a static **Current Functionality** card directly after **How it works**, with Available now, Automatic cleanup requirements, and Current limitations lists. Keep it, the README’s matching section, and this guide aligned in every PR that changes user-visible behavior or operational guarantees. Only describe implemented functionality; remove obsolete limitations as they are resolved.
 
-1. **Trash verification treats every fetch exception as success.** `verifyAssetIsTrashed` returns true on any `getAssetInfo` error, including network/auth/server errors. It checks `isTrashed === true` on a returned asset but does not verify `duplicateId === null`, keeper state, or duplicate-group removal. Success flags therefore provide weaker evidence than their names suggest.
-2. **Album transfer success is not inspected per item.** The code awaits `addAssetsToAlbums` but does not validate its returned individual results or reread album membership before resolving. Album preservation depends on the server's response semantics and available album permissions.
-3. **The API has no authentication and returns the Immich key.** `GET /settings/connection` sends the raw key into browser state. CORS is unrestricted and `app.listen(PORT)` does not restrict binding to loopback. This contradicts `CLAUDE.md`'s desired key isolation; treat the current server as a trusted local tool when operating it.
-4. **Connection persistence is basic.** Settings POST checks only truthiness, writes unquoted values directly to `.env`, and leaves runtime configuration unchanged. Validation/escaping and live reinitialization are absent.
-5. **Execution and logging are not transactional.** There is no request-level execution lock, durable job queue, rollback, or atomic log replacement. Concurrent batches can work from the same history snapshot. A later failure may leave album transfers or other Immich changes already applied; reported failure does not imply nothing changed.
-6. **Safety relies on normalized data and rule output.** The executor does not re-fetch fresh complete safety metadata immediately before mutation or independently repeat filename/resolution/size comparisons. Path assumptions, default false flags, and indefinitely cached sizes matter.
+Automatic cleanup is limited to exactly two unlinked images: keep a larger external image over an internal copy with matching filenames and dimensions. Favorites, archived/offline, edited/trashed, videos and unknown required safety data are excluded. Users can preview, simulate, execute eligible batches, inspect outcomes, and view/export batch logs. Manual review remains read-only; thumbnails, configurable rules, manual keeper selection, and the dedicated History view are not implemented. Scanning still examines the first N groups rather than providing resumable full-library scans.
+
+Remaining operational limits:
+
+- Album preservation covers memberships visible to the configured account. Separate API calls are not transactional; external changes can occur between checks and partial changes can remain after failures.
+- There is no execution lock, durable journal, retry quarantine, automatic reconciliation or recovery. Run one batch at a time and investigate uncertain outcomes before retrying. These facilities remain reserved for later work.
+- Single-group execution still bypasses batch logging/processed tracking. Clearing batch logs clears successful-history tracking, not Immich operations. JSON logging remains synchronous and non-atomic.
+- Preview caches remain app-scoped and without expiry. Execution uses fresh data, but previews can become stale. Path classification is still hardcoded.
+- The local API is unauthenticated, permits cross-origin requests, does not explicitly bind only to loopback, and returns the saved key through connection settings. Keep it within a trusted local environment.
+- Connection saving checks truthiness, writes unquoted `.env` values, and requires an API restart. Clear Credentials clears the form only. Most preference/performance controls remain placeholders.
 
 ## Build, validation, and maintenance
 
@@ -225,12 +234,12 @@ pnpm lint
 pnpm build
 ```
 
-`pnpm test` runs `apps/api/tests/*.test.ts` with Node’s built-in runner and the existing API-local `tsx` loader. Coverage includes rules, execution ordering and guards, batch attempts and history, isolated log storage, and representative HTTP/settings/export paths. HTTP tests use an ephemeral loopback server and fake Immich/fetch/settings dependencies; no real credentials are needed. Three TODO tests reserve verification-fetch and unsuccessful SDK-response handling for PR 2 without asserting the defects as intended behavior.
+`pnpm test` runs `apps/api/tests/*.test.ts` with Node’s built-in runner and the existing API-local `tsx` loader. Coverage includes rules, execution ordering and guards, batch attempts and history, isolated log storage, and representative HTTP/settings/export paths. HTTP tests use an ephemeral loopback server and fake Immich/fetch/settings dependencies; no real credentials are needed. The previous TODO safety cases are now executable regression tests. Tests cover protected/unknown metadata, stale selections, fresh albums, malformed/unsuccessful responses, partial results, bounded verification, safe defaults and batch stopping.
 
 `pnpm build` compiles the frontend into `apps/web/dist` and the API into `apps/api/dist`. Build success does not establish a production runtime: there is no API `start` script or frontend static serving in Express, and the shared packages expose `.ts` source. Plain `node apps/api/dist/index.js` deployment was not validated. `pnpm --filter web preview` previews the built frontend only and still needs the API.
 
 `pnpm lint` runs frontend ESLint only; backend lint remains unconfigured. The existing Hooks/Fast Refresh findings have been fixed without disabling lint rules. Root `typecheck` now covers all workspace packages, the web app, and API tests. API build excludes tests; `tsconfig.check.json` includes them for typechecking. Standalone package build scripts remain placeholders. The web app has separate compiler configuration and does not inherit the root strict setting.
 
-PR 1 preserves execution semantics, including known safety defects and default live execution when `dryRun` is omitted. Tests do not contact a live Immich server or prove compatibility with a particular server deployment. A browser-based interaction smoke test still needs to be performed in an environment with a browser.
+PR 2 deliberately changes execution defaults and eligibility: omitted modes simulate, non-images/protected/unknown assets cannot auto-resolve, and failed/uncertain attempts stop batches. Tests do not contact a live Immich server or prove compatibility with a particular server deployment. A browser-based interaction smoke test still needs to be performed in an environment with a browser.
 
 For future edits, start with the relevant source files in the map above. Keep rule evaluation deterministic, preserve album-transfer-before-resolution ordering, explicitly use `dryRun: true` for execution verification, and inspect per-group outcomes. Update this guide when paths, API contracts, settings behavior, or execution guarantees change.

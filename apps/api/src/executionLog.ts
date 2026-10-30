@@ -1,7 +1,11 @@
 import fs from "fs";
 import path from "path";
+import type { ExecutionResult } from "@immich-dedupe/shared";
 
-export type ExecutionLogEntry = {
+// New fields are optional so historical entries remain readable without migration.
+export type ExecutionLogEntry = Partial<Pick<ExecutionResult,
+  "outcome" | "failureStage" | "proposedAlbumIds" | "transferredAlbumIds" | "skippedAlbumIds"
+>> & {
   timestamp: string;
   groupId: string;
   mode: "dry-run" | "execute";

@@ -71,3 +71,58 @@ export function temporaryLog(t: TestContext) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return createExecutionLog(path.join(dir, 'data', 'execution-log.json'));
 }
+
+/** Stateful fake: album transfers and resolution change only these in-memory records. */
+export function executionHarness(groupId = 'group') {
+  const raw = rawGroup(groupId);
+  raw.assets[0].exifInfo = { fileSizeInByte: 200 };
+  raw.assets[1].exifInfo = { fileSizeInByte: 100 };
+  const assets = new Map(raw.assets.map((asset) => [asset.id, asset]));
+  const albums = new Map([
+    ['shared', album('shared', [...raw.assets])],
+    ['missing', album('missing', [raw.assets[1]])],
+  ]);
+  const calls: string[] = [];
+  const delays: number[] = [];
+  const mutations: string[] = [];
+  const client = fakeImmich({
+    getAssetDuplicates: async () => { calls.push('groups'); return [structuredClone(raw)]; },
+    getAssetInfo: async ({ id }) => {
+      calls.push(`asset:${id}`);
+      const asset = assets.get(id);
+      if (!asset) throw new Error('Asset not found');
+      return structuredClone(asset);
+    },
+    getAllAlbums: async ({ assetId }) => {
+      calls.push(`albums:${assetId}`);
+      return [...albums.values()].filter((a) => !assetId || a.assets.some((asset) => asset.id === assetId)).map((a) => structuredClone(a));
+    },
+    getAlbumInfo: async ({ id }) => {
+      calls.push(`album:${id}`);
+      const result = albums.get(id);
+      if (!result) throw new Error('Album not found');
+      return structuredClone(result);
+    },
+    addAssetsToAlbums: async ({ albumsAddAssetsDto: dto }) => {
+      calls.push('add'); mutations.push('add');
+      for (const id of dto.albumIds) {
+        const target = albums.get(id)!;
+        for (const assetId of dto.assetIds) if (!target.assets.some((a) => a.id === assetId)) target.assets.push(assets.get(assetId)!);
+      }
+      return { success: true };
+    },
+    resolveDuplicates: async ({ duplicateResolveDto: dto }) => {
+      calls.push('resolve'); mutations.push('resolve');
+      for (const item of dto.groups) {
+        for (const id of item.trashAssetIds) {
+          assets.get(id)!.isTrashed = true;
+          assets.get(id)!.duplicateId = null;
+        }
+        for (const id of item.keepAssetIds) assets.get(id)!.duplicateId = null;
+      }
+      return dto.groups.map((item) => ({ id: item.duplicateId, success: true }));
+    },
+  });
+  return { client, raw, assets, albums, calls, mutations, delays,
+    delay: async (ms: number) => { delays.push(ms); } };
+}

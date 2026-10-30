@@ -44,3 +44,29 @@ test('filename comparison trims whitespace and ignores case', () => {
   const input = group(); input.assets[0].fileName = ' PHOTO.JPG ';
   assert.equal(evaluateDuplicateGroup(input).status, 'auto-resolve');
 });
+
+for (const index of [0, 1]) {
+  for (const flag of ['isFavorite', 'isArchived', 'isOffline', 'isEdited', 'isTrashed'] as const) {
+    for (const value of [true, null]) {
+      test(`asset ${index}: ${flag}=${value} cannot auto-resolve`, () => {
+        const input = group(); input.assets[index][flag] = value;
+        assert.equal(evaluateDuplicateGroup(input).status, 'uncertain');
+      });
+    }
+  }
+  for (const assetType of ['VIDEO', 'AUDIO', 'OTHER', null]) {
+    test(`asset ${index}: media type ${assetType} cannot auto-resolve`, () => {
+      const input = group(); input.assets[index].assetType = assetType;
+      assert.equal(evaluateDuplicateGroup(input).status, 'uncertain');
+    });
+  }
+  test(`asset ${index}: linked Live Photo cannot auto-resolve`, () => {
+    const input = group(); input.assets[index].livePhotoVideoId = 'video';
+    assert.equal(evaluateDuplicateGroup(input).status, 'uncertain');
+  });
+}
+
+test('ambiguous source flags cannot select an automatic keeper', () => {
+  const input = group(); input.assets[0].isInternal = true;
+  assert.equal(evaluateDuplicateGroup(input).status, 'uncertain');
+});

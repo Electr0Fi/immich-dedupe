@@ -91,6 +91,8 @@ export function LogsScreen() {
                 <th>Time</th>
                 <th>Group</th>
                 <th>Mode</th>
+                <th>Outcome</th>
+                <th>Failure stage</th>
                 <th>Executed</th>
                 <th>Resolved</th>
                 <th>Trashed</th>
@@ -107,6 +109,8 @@ export function LogsScreen() {
                     <td>{entry.timestamp}</td>
                     <td>{entry.groupId}</td>
                     <td>{entry.mode}</td>
+                    <td>{entry.outcome === 'needs-verification' ? 'Needs verification' : entry.outcome ?? 'Legacy record'}</td>
+                    <td>{entry.failureStage ?? '—'}</td>
                     <td>{String(entry.executed)}</td>
                     <td>{String(entry.resolvedDuplicate)}</td>
                     <td>{String(entry.trashedAsset)}</td>

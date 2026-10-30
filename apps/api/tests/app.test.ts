@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { test, type TestContext } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { createApp, type AppDependencies } from '../src/app';
-import { fakeImmich, rawGroup, rawAsset, album, temporaryLog } from './fixtures';
+import { fakeImmich, rawGroup, rawAsset, album, temporaryLog, executionHarness } from './fixtures';
 
 function dependencies(t: TestContext, overrides: Partial<AppDependencies> = {}): AppDependencies {
   const groups = [rawGroup('one'), rawGroup('two'), rawGroup('three')];
@@ -14,7 +14,11 @@ function dependencies(t: TestContext, overrides: Partial<AppDependencies> = {}):
     saveConnection: () => { throw new Error('Unexpected settings write'); },
     immich: fakeImmich({
       getAssetDuplicates: async () => groups,
-      getAssetInfo: async ({ id }) => rawAsset(id, { exifInfo: { fileSizeInByte: id.endsWith('keep') ? 200 : 100 } }),
+      getAssetInfo: async ({ id }) => {
+        const asset = groups.flatMap((g) => g.assets).find((a) => a.id === id);
+        if (!asset) throw new Error('Unknown asset');
+        return { ...asset, exifInfo: { fileSizeInByte: id.endsWith('keep') ? 200 : 100 } };
+      },
       getAllAlbums: async () => [],
     }),
     ...overrides,
@@ -73,7 +77,7 @@ test('scan and execution limits remain separate, with batch logging', async (t) 
 test('album enrichment reaches preview and single-group dry-run without mutations', async (t) => {
   const raw = rawGroup('one');
   const deps = dependencies(t);
-  deps.immich.getAllAlbums = async () => [album('missing', [raw.assets[1]])];
+  deps.immich.getAllAlbums = async ({ assetId }) => assetId === 'one-keep' ? [] : [album('missing', [raw.assets[1]])];
   deps.immich.getAlbumInfo = async () => album('missing', [raw.assets[1]]);
   const base = await serve(t, deps);
   const preview = await (await fetch(`${base}/execution/duplicates/one/preview`)).json();
@@ -83,7 +87,9 @@ test('album enrichment reaches preview and single-group dry-run without mutation
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"dryRun":true}',
   })).json();
   assert.equal(execution.execution.executed, false);
-  assert.deepEqual(execution.execution.transferredAlbumIds, ['missing']);
+  assert.equal(execution.execution.outcome, 'dry-run');
+  assert.deepEqual(execution.execution.proposedAlbumIds, ['missing']);
+  assert.deepEqual(execution.execution.transferredAlbumIds, []);
   assert.equal(deps.log.loadExecutionLog().length, 0, 'single-group logging is unchanged in PR 1');
   assert.equal((await fetch(`${base}/execution/duplicates/missing/preview`)).status, 404);
 });
@@ -139,4 +145,103 @@ test('SDK failures preserve the existing HTTP error contract', async (t) => {
   const response = await fetch(`${base}/immich/duplicates`);
   assert.equal(response.status, 500);
   assert.deepEqual(await response.json(), { ok: false, error: 'Simulated upstream failure' });
+});
+
+for (const route of ['/execution/run', '/execution/duplicates/one']) {
+  test(`${route}: omitted dryRun simulates instead of executing`, async (t) => {
+    const base = await serve(t, dependencies(t));
+    const response = await fetch(`${base}${route}`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.dryRun, true);
+    const results = body.results ?? [body.execution];
+    assert.ok(results.every((result: { outcome: string; executed: boolean }) => result.outcome === 'dry-run' && !result.executed));
+  });
+
+  test(`${route}: invalid modes and limits fail before SDK access`, async (t) => {
+    const base = await serve(t, dependencies(t, { immich: fakeImmich() }));
+    const bodies = [
+      { dryRun: 'true' }, { dryRun: 'false' }, { dryRun: null }, { dryRun: 0 },
+      ...['scanLimit', 'executeLimit', 'limit'].flatMap((field) =>
+        [0, -1, 1.5, '10', null, Number.MAX_SAFE_INTEGER + 1].map((value) => ({ [field]: value }))),
+    ];
+    for (const body of bodies) {
+      const response = await fetch(`${base}${route}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 400, JSON.stringify(body));
+      assert.equal((await response.json()).ok, false);
+    }
+  });
+}
+
+test('execution defaults and explicit legacy-limit precedence remain predictable', async (t) => {
+  const base = await serve(t, dependencies(t));
+  const cases = [
+    [{}, 100, 10], [{ limit: 1 }, 1, 1],
+    [{ limit: 1, scanLimit: 2 }, 2, 1], [{ limit: 1, executeLimit: 2 }, 1, 2],
+    [{ limit: 1, scanLimit: 2, executeLimit: 3 }, 2, 3],
+  ] as const;
+  for (const [input, scan, execute] of cases) {
+    const body = await (await fetch(`${base}/execution/run`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+    })).json();
+    assert.equal(body.scanLimit, scan); assert.equal(body.executeLimit, execute);
+    assert.equal(body.stoppedEarly, false); assert.equal(body.stopReason, null);
+  }
+});
+
+for (const route of ['/execution/run', '/execution/duplicates/one']) {
+  test(`${route}: explicit live mode reports verified success with fake Immich`, async (t) => {
+    const h = executionHarness('one');
+    const deps = dependencies(t, { immich: h.client });
+    const base = await serve(t, deps);
+    const response = await fetch(`${base}${route}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"dryRun":false}',
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.dryRun, false);
+    assert.equal((body.results?.[0] ?? body.execution).outcome, 'succeeded');
+    assert.deepEqual(h.mutations, ['add', 'resolve']);
+    if (body.results) {
+      const entry = deps.log.loadExecutionLog()[0];
+      assert.equal(entry.outcome, 'succeeded'); assert.deepEqual(entry.transferredAlbumIds, ['missing']);
+      const exported = await (await fetch(`${base}/execution/log/export.csv`)).text();
+      assert.ok(exported.includes('outcome,failureStage,proposedAlbumIds,transferredAlbumIds'));
+      assert.ok(exported.includes('succeeded'));
+    }
+  });
+}
+
+test('batch failure is HTTP 200 with a stop reason and unverified outcome', async (t) => {
+  const h = executionHarness('one');
+  const getGroups = h.client.getAssetDuplicates;
+  h.client.getAssetDuplicates = async () => [...await getGroups({}), rawGroup('later')];
+  h.client.resolveDuplicates = async () => { h.mutations.push('resolve'); return [{ id: 'one', success: false }]; };
+  const read = h.client.getAssetInfo;
+  h.client.getAssetInfo = async (args) => args.id.startsWith('later-') ?
+    { ...rawGroup('later').assets.find((asset) => asset.id === args.id)!, exifInfo: { fileSizeInByte: args.id.endsWith('keep') ? 200 : 100 } } : await read(args);
+  const deps = dependencies(t, { immich: h.client });
+  const base = await serve(t, deps);
+  const response = await fetch(`${base}/execution/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"dryRun":false}',
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.stoppedEarly, true); assert.ok(body.stopReason);
+  assert.equal(body.results[0].outcome, 'needs-verification');
+  assert.equal(body.actuallyExecutedCount, 0); assert.equal(deps.log.getProcessedGroupIds().size, 0);
+  assert.deepEqual(h.mutations, ['add', 'resolve']);
+});
+
+test('protected assets are excluded consistently from analysis, plan and preview', async (t) => {
+  const h = executionHarness('one'); h.assets.get('one-keep')!.isFavorite = true;
+  const base = await serve(t, dependencies(t, { immich: h.client }));
+  const analysis = await (await fetch(`${base}/analysis/duplicates?limit=1`)).json();
+  const plan = await (await fetch(`${base}/execution/plan?scanLimit=1`)).json();
+  const preview = await (await fetch(`${base}/execution/duplicates/one/preview`)).json();
+  assert.equal(analysis.autoResolveCount, 0); assert.equal(analysis.uncertainCount, 1);
+  assert.equal(plan.items.length, 0); assert.equal(preview.executable, false);
+  assert.deepEqual(h.mutations, []);
 });

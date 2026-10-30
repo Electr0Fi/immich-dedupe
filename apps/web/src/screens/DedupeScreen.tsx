@@ -1,3 +1,4 @@
+import { ExecutionResults } from '../components/ExecutionResults';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getDuplicateAnalysis,
@@ -312,37 +313,7 @@ export function DedupeScreen({ requireConfirmation }: Props) {
         )}
       </section>
 
-      <section className="card">
-        <h2>Last Run Results</h2>
-        {lastRun && lastRun.results.length > 0 ? (
-          <table>
-            <thead>
-              <tr>
-                <th>Group</th>
-                <th>Mode</th>
-                <th>Executed</th>
-                <th>Keep</th>
-                <th>Trash</th>
-                <th>Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {lastRun.results.map((result) => (
-                <tr key={`${result.groupId}-${result.mode}`}>
-                  <td>{result.groupId}</td>
-                  <td>{result.mode}</td>
-                  <td>{String(result.executed)}</td>
-                  <td>{result.keepAssetId}</td>
-                  <td>{result.trashAssetId}</td>
-                  <td>{result.message}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p>No run results yet.</p>
-        )}
-      </section>
+      <ExecutionResults run={lastRun} />
     </div>
   );
 }

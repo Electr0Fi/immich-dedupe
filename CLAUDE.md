@@ -59,7 +59,9 @@ pnpm lint                       # Frontend ESLint only
 - Successful duplicate resolution results in:
   - `"isTrashed": true`
   - `"duplicateId": null`
-- External assets are preferred over internal/imported copies
+- Automatic cleanup is image-only and requires the larger external original plus matching names/dimensions. Protected or unknown metadata and Live Photo links prevent automatic resolution.
+- Execution defaults to dry-run, rechecks fresh data, verifies album preservation and resolution, and stops batches on failed or uncertain outcomes. Never retry mutations automatically.
+- Keep the Welcome Current Functionality card, README.md, and PROJECT_GUIDE.md aligned whenever behavior changes.
 
 ## Common Mistakes to Avoid
 - DON'T: Use `deleteDuplicate` or `DELETE /duplicates/:id` for asset cleanup

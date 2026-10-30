@@ -20,9 +20,15 @@ type RawAsset = {
   checksum?: string | null;
   width?: number | null;
   height?: number | null;
+  type?: string | null;
+  isFavorite?: boolean | null;
+  isArchived?: boolean | null;
+  isOffline?: boolean | null;
+  livePhotoVideoId?: string | null;
   isEdited?: boolean | null;
   isTrashed?: boolean | null;
   exifInfo?: {
+    fileSizeInByte?: number | string | null;
     exifImageWidth?: number | null;
     exifImageHeight?: number | null;
   } | null;
@@ -33,6 +39,10 @@ type RawDuplicateGroup = {
   assets: RawAsset[];
 };
 
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
 function normalizeAsset(raw: RawAsset, groupId: string): AssetRecord {
   const originalPath = raw.originalPath ?? null;
   const { isExternal, isInternal } = classifySource(originalPath);
@@ -40,7 +50,7 @@ function normalizeAsset(raw: RawAsset, groupId: string): AssetRecord {
   return {
     id: raw.id,
     duplicateId: raw.duplicateId ?? groupId,
-    fileName: raw.originalFileName ?? "unknown",
+    fileName: raw.originalFileName ?? "",
     originalPath,
     originalMimeType: raw.originalMimeType ?? null,
     fileCreatedAt: raw.fileCreatedAt ?? null,
@@ -52,8 +62,13 @@ function normalizeAsset(raw: RawAsset, groupId: string): AssetRecord {
     deviceId: raw.deviceId ?? null,
     deviceAssetId: raw.deviceAssetId ?? null,
     libraryId: raw.libraryId ?? null,
-    isEdited: raw.isEdited ?? false,
-    isTrashed: raw.isTrashed ?? false,
+    assetType: raw.type ?? null,
+    isEdited: booleanOrNull(raw.isEdited),
+    isTrashed: booleanOrNull(raw.isTrashed),
+    isFavorite: booleanOrNull(raw.isFavorite),
+    isArchived: booleanOrNull(raw.isArchived),
+    isOffline: booleanOrNull(raw.isOffline),
+    livePhotoVideoId: raw.livePhotoVideoId ?? null,
     isExternal,
     isInternal,
     fileSize: null,
