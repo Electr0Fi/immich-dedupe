@@ -14,6 +14,7 @@ A local React/Express application for reviewing duplicate groups already identif
 - Persist checkpoints before mutations and quarantine unfinished or uncertain attempts across restarts, including their group and selected asset IDs. Unrelated groups remain usable.
 - Inspect recovery evidence in Logs, recheck outcomes without changing Immich, and explicitly allow a new attempt only after another fresh intact-pair check. Release does not run cleanup or override other quarantines.
 - Clear display log entries without deleting recovery evidence, processed groups, or legacy exclusions.
+- Read outcome summaries with expandable technical details and links to recovery. Dedupe restores the latest saved run for the current account when opened; use Refresh latest to check newer runs, including those from other tabs.
 
 ### Automatic cleanup requirements
 
@@ -30,9 +31,10 @@ A local React/Express application for reviewing duplicate groups already identif
 - Album protection covers memberships visible to your configured Immich account. Operations are not transactional and may leave partial changes.
 - Use one API instance per data directory. Multi-process locking, automatic retry/resumption, rollback, and restoration are not available. Investigate uncertain outcomes and recheck them before explicitly releasing a pair.
 - Corrupt recovery storage disables execution and recovery-changing actions until repaired. The app never silently resets evidence or automatically promotes interrupted temporary files. Display logs are a separate audit view, not the recovery authority.
-- Connection changes require an API restart. Clear Credentials clears the form only. Performance settings and most safety controls are placeholders; execution safety is enforced by backend code.
+- Connection changes require an API restart. Test and save writes configuration; Clear form clears only the form. Reset preview cache clears browser scan previews only. Confirmation is a session-only browser preference; backend safety rules are fixed, and configurable performance settings are not implemented.
 - This is a trusted local tool: the API has no authentication, allows cross-origin requests, and the connection-settings endpoint returns the saved API key. Do not expose it as a public service.
-- Packaged deployment and CI are not configured. Navigation is currently hidden below 900 px without an alternate mobile menu.
+- Only the latest run is restored; full History and automatic polling are not implemented. Older records show missing request/stop details as unknown. Unsaved partial-response evidence survives screen navigation during this browser session but cannot be restored after reload.
+- Packaged deployment and CI are not configured. Narrow screens use a horizontal navigation bar.
 
 ## Run locally
 
@@ -122,6 +124,7 @@ The execution path is: fetch duplicate groups → normalize and enrich → evalu
 
 ```bash
 pnpm test
+pnpm test:ui
 pnpm typecheck
 pnpm lint
 pnpm build
@@ -132,3 +135,20 @@ Tests use Node's test runner, the existing `tsx` loader, fake Immich responses, 
 Build outputs are `apps/web/dist` and `apps/api/dist`; compilation is not a packaged deployment. There is no API start script or static frontend serving in Express. Standalone workspace package build scripts remain placeholders.
 
 See [PROJECT_GUIDE.md](PROJECT_GUIDE.md) for routes and operational detail, and [AGENTS.md](AGENTS.md) for development instructions. Every functionality change must update the Welcome page's Current Functionality card, this README, and the project guide together.
+
+## Outcome summaries and latest-run reads
+
+Dedupe distinguishes verified completed, simulated, failed, needs-verification, and awaiting-result attempts. Exclusions are grouped as processed, legacy evidence, or quarantined. Request errors and preview refresh errors appear separately. A lost execution response is unknown: the API may still be working. Check the journal and recovery evidence before retrying. Successful rechecks and releases appear as subsequent recovery assessments, preserving the original attempt outcome.
+
+`GET /execution/runs/latest` and `GET /execution/runs/:runId` return compact journal views scoped to the normalized server URL and current account. They do not create migration markers, write evidence, or mutate Immich. Phases are running, finished, or interrupted (no recorded completion and no active coordinator). Details of checkpoints remain in recovery detail. No full-history listing is added.
+
+New runs use journal version 2 with immutable request context and a terminal report (counts, exclusions, stop reason and request errors). Version 1 stays readable without rewriting or inventing missing metadata. **Older application releases cannot read version 2 files: do not downgrade against the same journal directory.** Preserve all evidence when upgrading or troubleshooting.
+
+Browser checks use Chromium and fake API responses only:
+
+```bash
+pnpm --filter web exec playwright install --with-deps chromium
+pnpm test:ui
+```
+
+The test command starts a dedicated frontend server and intercepts backend requests; no real API or Immich server is needed. Settings diagnostics export the current form URL, key-configured flag, connection test result, and session confirmation preference; keys and unimplemented performance settings are omitted.

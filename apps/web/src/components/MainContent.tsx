@@ -6,20 +6,25 @@ import { HistoryScreen } from '../screens/HistoryScreen';
 import { LogsScreen } from '../screens/LogsScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import type { SafetyConfig } from '../settings';
+import type { ExecutionState } from '../useExecution';
 
 type Props = {
   active: NavItemId;
   safety: SafetyConfig;
   onSafetyChange: Dispatch<SetStateAction<SafetyConfig>>;
+  execution: ExecutionState;
+  recoveryAttemptId: string | null;
+  onReviewRecovery: (id: string) => void;
+  onBackResults: () => void;
 };
 
-export function MainContent({ active, safety, onSafetyChange }: Props) {
+export function MainContent({ active, safety, onSafetyChange, execution, recoveryAttemptId, onReviewRecovery, onBackResults }: Props) {
   return (
     <main className="main-content">
       {active === 'welcome' && <WelcomeScreen />}
-      {active === 'dedupe' && <DedupeScreen requireConfirmation={safety.requireConfirmation} />}
+      {active === 'dedupe' && <DedupeScreen requireConfirmation={safety.requireConfirmation} execution={execution} onReviewRecovery={onReviewRecovery} />}
       {active === 'history' && <HistoryScreen />}
-      {active === 'logs' && <LogsScreen />}
+      {active === 'logs' && <LogsScreen recoveryAttemptId={recoveryAttemptId} onBackResults={onBackResults} />}
       {active === 'settings' && <SettingsScreen safety={safety} onSafetyChange={onSafetyChange} />}
     </main>
   );

@@ -152,6 +152,26 @@ export type RecoveryAttempt = {
 };
 export type ExecutionScope = { apiUrl: string; accountId: string };
 export type ExecutionExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined"; attemptIds: string[] };
+export type RunContext = { dryRun: boolean; scanLimit: number; executeLimit: number; source: "batch" | "single"; groupId: string | null };
+export type RunReport = {
+  fetchedGroups: number; eligibleCount: number; excludedGroups: ExecutionExclusion[];
+  stoppedEarly: boolean; stopReason: string | null;
+  requestError: { status: number; code: string; message: string } | null;
+};
+/** Compact read model; checkpoints remain available through recovery detail. */
+export type RunView = {
+  runId: string; startedAt: string; finishedAt: string | null;
+  phase: "running" | "finished" | "interrupted";
+  context: RunContext | null; report: RunReport | null;
+  attempts: Array<{
+    attemptId: string; groupId: string; mode: ExecutionMode; keepAssetId: string | null; trashAssetId: string | null;
+    result: ExecutionResult | null; lastStage: string; confirmedAlbumIds: string[];
+    confirmedEffects: { loserTrashed: boolean; loserUnlinked: boolean; keeperUntrashed: boolean };
+    recovery: "quarantined" | "released" | "verified-resolved" | "closed";
+    assessment: RecoveryAssessment | null;
+  }>;
+};
+export type RunViewResponse = { ok: boolean; scope: ExecutionScope; run: RunView | null };
 export type RecoveryList = {
   ok: boolean;
   health: "ready" | "unavailable";

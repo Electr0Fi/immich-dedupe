@@ -52,6 +52,7 @@ pnpm --filter api typecheck                # Backend and imported workspace type
 pnpm --filter web typecheck               # Frontend TypeScript check
 pnpm typecheck                            # All workspace packages and API test sources
 pnpm test                                 # Rules, execution, logging, and HTTP regression tests
+pnpm test:ui                              # Playwright Chromium with mocked backend; requires browser prerequisites
 pnpm lint                                 # Frontend ESLint only; backend lint is not configured
 pnpm build                                # Web build, then API compilation
 pnpm --filter web preview                 # Built frontend preview; API still required
@@ -108,8 +109,8 @@ Main routes: `/health`, `/immich/test`, `/immich/duplicates` and enrichment/debu
 - Outcomes distinguish `dry-run`, `succeeded`, `failed` and `needs-verification`, with a failure stage and proposed/confirmed albums. New batch logs/exports include these fields; historical entries remain unchanged. Unfinished/uncertain attempts remain quarantined by group and selected asset IDs across restarts. Unrelated groups remain usable. Rechecks read Immich and append local evidence only; an intact assessment needs an explicit freshly verified release before a separate new attempt. There is no automatic mutation replay, retry/resumption or restoration.
 - The API has no authentication, unrestricted CORS, and no explicit loopback-only binding. `GET /settings/connection` currently returns the raw Immich key to the browser, contrary to the desired credential-isolation convention. Do not expand credential exposure or place secrets in logs/docs/bundles.
 - Connection saving checks truthiness and writes unquoted values directly to `.env`; it neither fully validates values nor reinitializes runtime configuration.
-- Settings' confirmation toggle works in browser memory only. Other safety controls are disabled placeholders. Performance controls affect component state/diagnostics only, not backend behavior. The displayed cache directory is a placeholder. Reset Local Cache clears only frontend cached scans. Clear Credentials clears only the form, not saved or active credentials.
-- History is a placeholder; manual review is a read-only decision table; thumbnails and rule configuration are absent. Logs shows the newest 20 entries, while exports include the full log. Below 900 px the sidebar is hidden without replacement navigation.
+- Settings' confirmation toggle works in browser memory only. Backend safeguards are fixed explanatory text; performance configuration is explicitly unimplemented. Test and save requires an API restart; Reset preview cache clears frontend previews only, and Clear form changes no saved/active credentials. Diagnostics omit keys and unimplemented performance settings.
+- History is a placeholder; manual review is a read-only decision table; thumbnails and rule configuration are absent. Logs shows the newest 20 entries, while exports include the full log. Below 900 px navigation uses a horizontal scrolling bar.
 
 ## Validation and reporting
 
@@ -126,3 +127,5 @@ PR 3 invariants: both production execution routes must use the coordinator. Hold
 Recovery scope is normalized Immich URL plus current-user ID; identity lookup must succeed, API keys must never be persisted, and legacy import runs once for its original scope. Manual recovery cannot override another unresolved attempt or perform any Immich mutation. Keep the Welcome Current Functionality card, README and project guide aligned with these actual guarantees and remaining limits.
 
 The Immich API key requires `user.read` for `GET /users/me`, including dry-run identity checks. A successful connection test does not establish this permission. Diagnose 403/missing permission without bypassing identity or altering journal evidence; keep user-facing diagnostics free of credentials and raw SDK errors.
+
+PR 4 invariants: new runs use journal version 2 with immutable request context and a terminal report; version 1 remains readable unchanged, with unknown metadata left null. Older releases cannot read v2: do not downgrade against the same data directory. Scoped latest/specific run GETs must remain read-only, including no migration. Keep compact run contracts in shared; raw checkpoint evidence remains in recovery detail. Shell-owned requests survive navigation; never label a lost response as stopped or discard returned partial evidence when a journal refresh fails. Restore only the latest current-account run, with explicit refresh and no automatic polling/retry. Preserve original attempt outcomes when showing later recovery assessments. UI tests use fake API responses, never production credentials. Maintain Welcome, README and guide descriptions together, including unknown older data and unsaved partial-results limitations.

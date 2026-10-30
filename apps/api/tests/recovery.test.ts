@@ -397,3 +397,110 @@ test('resolved recovery does not require irrelevant optional keeper metadata, wh
   const assessment = await execution.recheck(result.results[0].attemptId!);
   assert.equal(assessment.assessments.at(-1)?.classification, 'verified-resolved');
 });
+
+test('latest run reads never initialize migration or storage, and require current identity', async (t) => {
+  const h = setup(t); const execution = h.service();
+  assert.equal((await execution.readRun()).run, null);
+  assert.equal(fs.existsSync(h.journalDir), false);
+  h.client.getMyUser = async () => { throw { status: 401 }; };
+  await assert.rejects(execution.readRun(), expectServiceError(503, 'identity_unavailable'));
+  assert.equal(fs.existsSync(h.journalDir), false); assert.deepEqual(h.mutations, []);
+});
+
+test('version 2 restores exact request context, terminal report and exclusions after restart and log clearing', async (t) => {
+  const h = setup(t); const execution = h.service();
+  await execution.run(options, h.load);
+  const latest = await execution.run({ ...options, dryRun: true, scanLimit: 17, executeLimit: 2 }, h.load);
+  await execution.clearLog();
+  const restored = (await h.restart().execution.readRun()).run!;
+  assert.equal(restored.runId, latest.runId); assert.equal(restored.phase, 'finished');
+  assert.deepEqual(restored.context, { dryRun: true, scanLimit: 17, executeLimit: 2, source: 'batch', groupId: null });
+  assert.deepEqual(restored.report, { fetchedGroups: 1, eligibleCount: 0, excludedGroups: latest.excludedGroups, stoppedEarly: false, stopReason: null, requestError: null });
+  assert.equal(restored.attempts.length, 0);
+  assert.deepEqual(h.mutations, ['add', 'resolve']);
+});
+
+test('specific run reads are scoped by account and API URL, while reads make no mutations', async (t) => {
+  const h = setup(t); const execution = h.service();
+  const result = await execution.run({ ...options, dryRun: true }, h.load);
+  const view = (await execution.readRun(result.runId)).run!;
+  assert.equal(view.attempts[0].result?.outcome, 'dry-run');
+  assert.ok(!('checkpoints' in view.attempts[0]));
+  h.client.getMyUser = async () => ({ id: 'different-account' });
+  assert.equal((await execution.readRun()).run, null);
+  await assert.rejects(execution.readRun(result.runId), expectServiceError(404));
+  h.client.getMyUser = async () => ({ id: 'test-user' });
+  const other = createExecutionService({ client: h.client, apiUrl: 'http://other.invalid/api', journal: h.journal, log: h.log });
+  assert.equal((await other.readRun()).run, null);
+  assert.deepEqual(h.mutations, []);
+});
+
+test('version 1 remains readable without rewriting or fabricating request context', async (t) => {
+  const h = setup(t); h.journal.migrate(h.scope, h.log.loadExecutionLog);
+  const old = prepared(h.scope); h.journal.save(old);
+  const file = path.join(h.journalDir, `${old.runId}.json`); const before = fs.readFileSync(file, 'utf8');
+  const restored = (await h.restart().execution.readRun()).run!;
+  assert.equal(restored.phase, 'interrupted'); assert.equal(restored.context, null); assert.equal(restored.report, null);
+  assert.equal(restored.attempts[0].recovery, 'quarantined'); assert.equal(restored.attempts[0].lastStage, 'prepared');
+  assert.equal(fs.readFileSync(file, 'utf8'), before); assert.deepEqual(h.mutations, []);
+});
+
+test('active and interrupted are distinct read-only phases', async (t) => {
+  const h = setup(t); const execution = h.service();
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const pending = execution.run({ ...options, dryRun: true }, async () => { entered(); await wait; return h.load(); });
+  await started;
+  try {
+    assert.equal((await execution.readRun()).run?.phase, 'running');
+    assert.equal((await h.restart().execution.readRun()).run?.phase, 'interrupted');
+    assert.deepEqual(h.mutations, []);
+  } finally { release(); await pending; }
+  assert.equal((await execution.readRun()).run?.phase, 'finished');
+});
+
+test('failed scans persist a request failure rather than a successful empty run', async (t) => {
+  const h = setup(t); const execution = h.service();
+  await assert.rejects(execution.run(options, async () => { throw new Error('scan error'); }), expectServiceError(500));
+  const view = (await h.restart().execution.readRun()).run!;
+  assert.equal(view.phase, 'finished'); assert.equal(view.report?.requestError?.status, 500);
+  assert.equal(view.report?.stoppedEarly, true); assert.equal(view.attempts.length, 0);
+});
+
+test('new request context and terminal reports are immutable; inconsistent v2 records fail closed', async (t) => {
+  const h = setup(t); const result = await h.service().run({ ...options, dryRun: true }, h.load);
+  const run = h.journal.run(h.scope, result.runId)!;
+  assert.equal(run.version, 2); if (run.version !== 2) return;
+  run.context.scanLimit = 999;
+  assert.throws(() => h.journal.save(run));
+  const file = path.join(h.journalDir, `${result.runId}.json`);
+  const corrupted = JSON.parse(fs.readFileSync(file, 'utf8')); corrupted.report = null;
+  fs.writeFileSync(file, JSON.stringify(corrupted));
+  await assert.rejects(h.restart().execution.readRun());
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).report, null);
+});
+
+test('specific excluded requests persist their reason and single-group context', async (t) => {
+  const h = setup(t); const execution = h.service();
+  await execution.run(options, h.load);
+  await assert.rejects(execution.run({ ...options, singleGroupId: 'group' }, h.load), expectServiceError(409, 'group_excluded'));
+  const restored = (await h.restart().execution.readRun()).run!;
+  assert.equal(restored.context?.source, 'single'); assert.equal(restored.context?.groupId, 'group');
+  assert.equal(restored.report?.requestError?.status, 409);
+  assert.equal(restored.report?.excludedGroups[0].reason, 'processed');
+});
+
+test('compact unfinished run views retain confirmed effects without inventing a terminal result', async (t) => {
+  const h = setup(t); h.journal.migrate(h.scope, h.log.loadExecutionLog);
+  const run = prepared(h.scope); h.journal.save(run); const id = run.attempts[0].attemptId;
+  const execute = createDecisionExecutor(h.client, { delay: h.delay, onCheckpoint: async (event) => {
+    h.journal.checkpoint(h.scope, id, event);
+    if (event.kind === 'verification') throw new Error('Simulated interruption after confirmed verification');
+  } });
+  await assert.rejects(execute(group(), evaluateDuplicateGroup(group()), false), CheckpointFailure);
+  const restored = (await h.restart().execution.readRun()).run!;
+  assert.equal(restored.attempts[0].result, null); assert.equal(restored.phase, 'interrupted');
+  assert.deepEqual(restored.attempts[0].confirmedEffects, { loserTrashed: true, loserUnlinked: true, keeperUntrashed: true });
+  assert.deepEqual(restored.attempts[0].confirmedAlbumIds, ['missing']);
+});

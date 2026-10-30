@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { DuplicateGroup, DuplicateDecision, ExecutionResult, ExecutionScope, ExecutionExclusion, RecoveryAttempt } from "@immich-dedupe/shared";
+import type { DuplicateGroup, DuplicateDecision, ExecutionResult, ExecutionScope, ExecutionExclusion, RecoveryAttempt, RunView, RunViewResponse, RunReport } from "@immich-dedupe/shared";
 import { createDecisionExecutor, CheckpointFailure } from "./executeDecision";
 import { isExecutableDecision } from "./executePlan";
 import { JournalError, isUnresolved, type ExecutionJournal } from "./executionJournal";
@@ -73,7 +73,33 @@ export function createExecutionService(deps: {
     if (!found) throw new ExecutionServiceError(404, "attempt_not_found", "Attempt not found for the current connection");
     return found.attempt;
   }
+  async function readRun(runId?: string): Promise<RunViewResponse> {
+    journal.initialize();
+    const scope = await identity();
+    const record = runId ? journal.run(scope, runId) : journal.runs(scope).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.runId.localeCompare(a.runId))[0];
+    if (!record && runId) throw new ExecutionServiceError(404, "run_not_found", "Run not found for the current connection");
+    const run: RunView | null = record ? {
+      runId: record.runId, startedAt: record.startedAt, finishedAt: record.finishedAt,
+      phase: activeRunId === record.runId ? "running" : record.finishedAt ? "finished" : "interrupted",
+      context: record.version === 2 ? record.context : null, report: record.version === 2 ? record.report : null,
+      attempts: record.attempts.map((attempt) => ({
+        attemptId: attempt.attemptId, groupId: attempt.groupId, mode: attempt.mode,
+        keepAssetId: attempt.keepAssetId, trashAssetId: attempt.trashAssetId, result: attempt.result,
+        lastStage: attempt.checkpoints.at(-1)?.event.kind ?? "prepared",
+        confirmedAlbumIds: attempt.result?.transferredAlbumIds ?? attempt.checkpoints.flatMap(({ event }) => event.kind === "album-observed" ? event.confirmedAlbumIds : []),
+        confirmedEffects: {
+          loserTrashed: attempt.checkpoints.some(({ event }) => event.kind === "verification" && event.loserTrashed),
+          loserUnlinked: attempt.checkpoints.some(({ event }) => event.kind === "verification" && event.loserUnlinked),
+          keeperUntrashed: attempt.checkpoints.some(({ event }) => event.kind === "verification" && event.keeperUntrashed),
+        },
+        recovery: attempt.releasedAt ? "released" : attempt.assessments.at(-1)?.classification === "verified-resolved" ? "verified-resolved" : isUnresolved(attempt) ? "quarantined" : "closed",
+        assessment: attempt.assessments.at(-1) ?? null,
+      })),
+    } : null;
+    return { ok: true, scope, run };
+  }
   return {
+    readRun,
     async run(options: ExecutionOptions, load: () => Promise<LoadedGroups>) {
       return exclusive(async (runId, scope) => {
         const results: ExecutionResult[] = [];
@@ -87,11 +113,15 @@ export function createExecutionService(deps: {
           trashedCount: results.filter((r) => r.trashedAsset).length,
         });
         try {
-          journal.save({ version: 1, runId, scope, startedAt: new Date().toISOString(), finishedAt: null, attempts: [] });
+          journal.save({ version: 2, runId, scope, startedAt: new Date().toISOString(), finishedAt: null, attempts: [], report: null,
+            context: { dryRun: options.dryRun, scanLimit: options.scanLimit, executeLimit: options.executeLimit, source: options.singleGroupId ? "single" : "batch", groupId: options.singleGroupId ?? null } });
           const policy = journal.exclusionIndex(scope);
           if (options.singleGroupId) {
             const excluded = exclusions(policy, { groupId: options.singleGroupId, assets: [] });
-            if (excluded) throw new ExecutionServiceError(409, "group_excluded", "This group is processed or quarantined; inspect its recovery evidence", { runId, excludedGroups: [excluded] });
+            if (excluded) {
+              excludedGroups.push(excluded);
+              throw new ExecutionServiceError(409, "group_excluded", "This group is processed or quarantined; inspect its recovery evidence", { runId, excludedGroups: [excluded] });
+            }
           }
           const loaded = await load(); fetchedGroups = loaded.groups.length;
           const byId = new Map(loaded.decisions.map((decision) => [decision.groupId, decision]));
@@ -137,14 +167,21 @@ export function createExecutionService(deps: {
             await (deps.delay ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(50);
           }
           const record = journal.run(scope, runId)!;
-          record.finishedAt = new Date().toISOString(); journal.save(record);
+          record.finishedAt = new Date().toISOString();
+          if (record.version === 2) record.report = { fetchedGroups, eligibleCount, excludedGroups, stoppedEarly, stopReason, requestError: null };
+          journal.save(record);
           return { ...response(stoppedEarly, stopReason), decision: loaded.decisions[0] };
         } catch (error) {
           if (!(error instanceof JournalError) && !(error instanceof CheckpointFailure)) {
             try {
               const record = journal.run(scope, runId);
               if (record && record.attempts.every((attempt) => attempt.result !== null)) {
-                record.finishedAt = new Date().toISOString(); journal.save(record);
+                record.finishedAt = new Date().toISOString();
+                const failure: RunReport["requestError"] = error instanceof ExecutionServiceError
+                  ? { status: error.status, code: error.code, message: error.message }
+                  : { status: 500, code: "execution_error", message: "The run could not be completed; inspect the recorded evidence." };
+                if (record.version === 2) record.report = { fetchedGroups, eligibleCount, excludedGroups, stoppedEarly: true, stopReason: failure.message, requestError: failure };
+                journal.save(record);
               }
             } catch (failure) { error = failure; }
           }
@@ -161,7 +198,7 @@ export function createExecutionService(deps: {
     async list(offset = 0, limit = 25) {
       const storage = journal.health();
       let error = storage.error;
-      try { if (storage.health === "ready") await identity(); } catch (failure) { error = failure instanceof Error ? failure.message : "Identity unavailable"; }
+      try { if (storage.health === "ready") await identity(); } catch (failure) { lastScope = null; error = failure instanceof Error ? failure.message : "Identity unavailable"; }
       const items = storage.health === "ready" && lastScope ? unresolved(lastScope) : [];
       return { ok: !error, health: error ? "unavailable" as const : "ready" as const, error, activeRunId, scope: lastScope,
         items: items.slice(offset, offset + limit), total: items.length, offset, limit };

@@ -7,7 +7,7 @@ import {
   type ExecutionLogEntry,
 } from '../api';
 
-export function LogsScreen() {
+export function LogsScreen({ recoveryAttemptId, onBackResults }: { recoveryAttemptId: string | null; onBackResults: () => void }) {
   const [log, setLog] = useState<ExecutionLogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +68,8 @@ export function LogsScreen() {
         <p>Audit trail of all execution operations.</p>
       </header>
 
-      <RecoveryPanel />
+      {recoveryAttemptId && <button onClick={onBackResults}>Back to results</button>}
+      <RecoveryPanel focusAttemptId={recoveryAttemptId} />
 
       <section className="card">
         <h2>Execution Log</h2>

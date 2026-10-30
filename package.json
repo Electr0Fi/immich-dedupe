@@ -8,7 +8,8 @@
     "build": "pnpm --filter web build && pnpm --filter api build",
     "lint": "pnpm --filter web lint",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter api test"
+    "test": "pnpm --filter api test",
+    "test:ui": "pnpm --filter web test:ui"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

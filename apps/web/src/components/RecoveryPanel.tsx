@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getRecovery, getRecoveryAttempt, recheckAttempt, releaseAttempt, type RecoveryList, type RecoveryAttempt } from '../api';
 
-export function RecoveryPanel() {
+export function RecoveryPanel({ focusAttemptId = null }: { focusAttemptId?: string | null }) {
   const [state, setState] = useState<RecoveryList | null>(null);
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -26,10 +26,17 @@ export function RecoveryPanel() {
     mounted.current = true;
     const request = ++version.current;
     getRecovery(offset, pageSize)
-      .then((value) => { if (mounted.current && request === version.current) { applyState(value); setError(null); } })
+      .then(async (value) => {
+        if (!mounted.current || request !== version.current) return;
+        applyState(value); setError(null);
+        if (focusAttemptId) {
+          const selected = await getRecoveryAttempt(focusAttemptId);
+          if (mounted.current && request === version.current) setDetail(selected.attempt);
+        }
+      })
       .catch((failure: unknown) => { if (mounted.current && request === version.current) setError(failure instanceof Error ? failure.message : 'Recovery information could not be loaded'); });
     return () => { mounted.current = false; };
-  }, [offset, applyState]);
+  }, [offset, applyState, focusAttemptId]);
 
   async function refresh() {
     const request = ++version.current;
@@ -63,7 +70,10 @@ export function RecoveryView({ state, busy, error, notice, detail, onAction, onP
   onAction: (attemptId?: string, kind?: 'details' | 'recheck' | 'release') => void;
   onPage: (offset: number) => void;
 }) {
+  const detailRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => { if (detail) detailRef.current?.focus(); }, [detail]);
   const disabled = busy || !state || state.health !== 'ready' || Boolean(state.activeRunId);
+  const displayed = detail ? [detail, ...(state?.items.filter((a) => a.attemptId !== detail.attemptId) ?? [])] : state?.items ?? [];
   return (
     <section className="card" aria-labelledby="recovery-heading">
       <h2 id="recovery-heading">Execution Recovery</h2>
@@ -78,8 +88,9 @@ export function RecoveryView({ state, busy, error, notice, detail, onAction, onP
       {notice && <p role="status">{notice}</p>}
       {!state && !error && <p>Loading recovery information…</p>}
       {state?.health === 'ready' && state.items.length === 0 && <p>No unresolved attempts on this page.</p>}
-      {state?.items.map((attempt) => {
+      {displayed.map((attempt) => {
         const assessment = attempt.assessments.at(-1);
+        const unresolved = !attempt.releasedAt && assessment?.classification !== 'verified-resolved' && (!attempt.result || attempt.result.outcome === 'needs-verification');
         const last = attempt.checkpoints.at(-1)?.event;
         const confirmed = attempt.result?.transferredAlbumIds ?? [...attempt.checkpoints].reverse().find((c) => c.event.kind === 'album-observed')?.event.confirmedAlbumIds ?? [];
         return <article key={attempt.attemptId} className="recovery-attempt">
@@ -92,10 +103,11 @@ export function RecoveryView({ state, busy, error, notice, detail, onAction, onP
             <dt>Quarantine reason</dt><dd>{attempt.result?.message ?? 'Attempt did not finish; its outcome must be verified.'}</dd>
           </dl>
           {assessment && <p>Last recheck: {assessment.classification} — {assessment.message}</p>}
+          {!unresolved && <p>This attempt is {attempt.releasedAt ? 'released' : assessment?.classification === 'verified-resolved' ? 'verified resolved' : 'closed'}. Earlier evidence is preserved.</p>}
           <div className="buttonRow">
             <button type="button" disabled={busy} onClick={() => onAction(attempt.attemptId, 'details')}>View evidence</button>
-            <button type="button" disabled={disabled} onClick={() => onAction(attempt.attemptId, 'recheck')}>Recheck outcome</button>
-            {assessment?.classification === 'pair-intact' && <button type="button" disabled={disabled} onClick={() => onAction(attempt.attemptId, 'release')}>Allow new attempt</button>}
+            {unresolved && <button type="button" disabled={disabled} onClick={() => onAction(attempt.attemptId, 'recheck')}>Recheck outcome</button>}
+            {unresolved && assessment?.classification === 'pair-intact' && <button type="button" disabled={disabled} onClick={() => onAction(attempt.attemptId, 'release')}>Allow new attempt</button>}
           </div>
         </article>;
       })}
@@ -104,7 +116,7 @@ export function RecoveryView({ state, busy, error, notice, detail, onAction, onP
         <span>{state.total} unresolved attempts</span>
         <button type="button" disabled={busy || state.offset + state.limit >= state.total} onClick={() => onPage(state.offset + state.limit)}>Next</button>
       </div>}
-      {detail && <details open><summary>Evidence for {detail.attemptId}</summary><pre className="recovery-evidence">{JSON.stringify(detail, null, 2)}</pre></details>}
+      {detail && <details open ref={detailRef} tabIndex={-1}><summary>Evidence for {detail.attemptId}</summary><pre className="recovery-evidence">{JSON.stringify(detail, null, 2)}</pre></details>}
     </section>
   );
 }

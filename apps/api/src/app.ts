@@ -591,6 +591,14 @@ export function createApp(dependencies: AppDependencies) {
     try { res.json({ ok: true, ...await execution.clearLog() }); }
     catch (error) { executionError(res, error); }
   });
+  app.get("/execution/runs/latest", async (_req, res) => {
+    try { res.json(await execution.readRun()); } catch (error) { executionError(res, error); }
+  });
+  app.get("/execution/runs/:runId", async (req, res) => {
+    if (!z.string().uuid().safeParse(req.params.runId).success) return res.status(400).json({ ok: false, error: "Invalid run ID" });
+    try { res.json(await execution.readRun(req.params.runId)); } catch (error) { executionError(res, error); }
+  });
+
   app.get("/execution/recovery", async (req, res) => {
     const parsed = z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(100).default(25) }).safeParse(req.query);
     if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid recovery pagination" });

@@ -312,3 +312,23 @@ test('checkpoint failures return HTTP 503 with identifiers and partial execution
   assert.deepEqual(body.partialExecution.results[0].transferredAlbumIds, ['missing']);
   assert.deepEqual(h.mutations, ['add']);
 });
+
+test('run read endpoints are scoped, compact and side effect free', async (t) => {
+  const deps = dependencies(t); const base = await serve(t, deps);
+  assert.equal((await (await fetch(`${base}/execution/runs/latest`)).json()).run, null);
+  assert.equal((await fetch(`${base}/execution/runs/not-a-uuid`)).status, 400);
+  assert.equal((await fetch(`${base}/execution/runs/00000000-0000-4000-8000-000000000001`)).status, 404);
+  const result = await (await fetch(`${base}/execution/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"dryRun":true,"scanLimit":3,"executeLimit":1}',
+  })).json();
+  const response = await fetch(`${base}/execution/runs/${result.runId}`);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.run.context.scanLimit, 3); assert.equal(body.run.report.eligibleCount, 3);
+  assert.equal(body.run.phase, 'finished'); assert.equal(body.run.attempts.length, 1);
+  assert.equal('checkpoints' in body.run.attempts[0], false);
+  deps.immich.getMyUser = async () => ({ id: 'other' });
+  assert.equal((await fetch(`${base}/execution/runs/${result.runId}`)).status, 404);
+  deps.immich.getMyUser = async () => { throw { status: 403, data: { message: 'Missing required permission: user.read' } }; };
+  assert.equal((await fetch(`${base}/execution/runs/latest`)).status, 503);
+});

@@ -1,7 +1,7 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
 import { getConnectionConfig, saveConnectionConfig, testConnection } from '../api';
 import { clearDedupeCache } from '../dedupeCache';
-import { DEFAULT_PERFORMANCE, type SafetyConfig, type PerformanceConfig } from '../settings';
+import type { SafetyConfig } from '../settings';
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
 
@@ -23,44 +23,6 @@ const DEFAULT_CONNECTION: ConnectionState = {
   serverVersion: null,
 };
 
-const SAFETY_TOGGLES: Array<{ key: keyof SafetyConfig; label: string; hint: string; disabled?: boolean }> = [
-  {
-    key: 'dryRunByDefault',
-    label: 'Dry-run by default',
-    hint: 'Simulate all operations without making changes unless explicitly overridden.',
-    disabled: true,
-  },
-  {
-    key: 'requireConfirmation',
-    label: 'Require confirmation before execution',
-    hint: 'Show a confirmation prompt before any live run.',
-  },
-  {
-    key: 'preferTrash',
-    label: 'Prefer trash over permanent delete',
-    hint: 'Send assets to the Immich trash instead of deleting them permanently.',
-    disabled: true,
-  },
-  {
-    key: 'blockPermanentDelete',
-    label: 'Block permanent delete',
-    hint: 'Prevent hard deletes unless this setting is explicitly disabled.',
-    disabled: true,
-  },
-  {
-    key: 'warnFavorites',
-    label: 'Warn when a favorited asset is selected',
-    hint: 'Show a warning if a favorited asset is about to be trashed.',
-    disabled: true,
-  },
-  {
-    key: 'warnMultipleAlbums',
-    label: 'Warn when asset is in multiple albums',
-    hint: 'Show a warning if an asset appears in more than one album.',
-    disabled: true,
-  },
-];
-
 type Props = {
   safety: SafetyConfig;
   onSafetyChange: Dispatch<SetStateAction<SafetyConfig>>;
@@ -68,7 +30,6 @@ type Props = {
 
 export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
   const [conn, setConn] = useState<ConnectionState>(DEFAULT_CONNECTION);
-  const [perf, setPerf] = useState<PerformanceConfig>(DEFAULT_PERFORMANCE);
 
   useEffect(() => {
     getConnectionConfig()
@@ -102,7 +63,8 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
       const result = await testConnection({ immichUrl, apiKey });
 
       if (result.ok && result.version) {
-        await saveConnectionConfig({ immichUrl, apiKey });
+        const saved = await saveConnectionConfig({ immichUrl, apiKey });
+        if (!saved.ok) throw new Error(saved.error ?? 'Connection test passed, but settings could not be saved.');
         setConn((prev) => ({
           ...prev,
           testStatus: 'success',
@@ -135,8 +97,8 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
         // API key intentionally omitted
         apiKeyConfigured: conn.apiKey.length > 0,
       },
-      safety,
-      performance: perf,
+      browserPreferences: { requireConfirmation: safety.requireConfirmation },
+      connectionTest: { status: conn.testStatus, testedServerVersion: conn.serverVersion },
     };
     const blob = new Blob([JSON.stringify(diagnostics, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -148,7 +110,7 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
   }
 
   function handleResetCache() {
-    const confirmed = window.confirm('Reset local cache? This will clear any locally cached scan data.');
+    const confirmed = window.confirm('Reset preview cache? This clears browser scan previews only. Backend size caches, execution records, and recovery evidence are preserved.');
     if (confirmed) {
       clearDedupeCache();
     }
@@ -156,7 +118,7 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
 
   function handleClearCredentials() {
     const confirmed = window.confirm(
-      'Clear saved credentials? This will remove the server URL and API key.'
+      'Clear this form? Saved credentials and the active API connection will remain unchanged.'
     );
     if (confirmed) {
       setConn(DEFAULT_CONNECTION);
@@ -168,7 +130,7 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
       <span className="connection-result connection-result--testing">Connecting…</span>
     ) : conn.testStatus === 'success' ? (
       <span className="connection-result connection-result--success">
-        Success: Settings saved!
+        Connection test passed and settings saved. Restart the API to apply the connection; reload the page to refresh the header status. This test does not verify cleanup or user.read permissions.
         {conn.serverVersion && <><br />Server {conn.serverVersion}</>}
       </span>
     ) : (
@@ -185,6 +147,7 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
       {/* ── Immich Connection ───────────────────────── */}
       <section className="card">
         <h2>Immich Connection</h2>
+        <p>Test and save writes the backend configuration. Restart the API after saving. The key needs user.read for execution and recovery identity checks.</p>
 
         <div className="settings-fields">
           <div className="settings-field">
@@ -224,113 +187,35 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
               disabled={conn.testStatus === 'testing'}
               onClick={handleTestConnection}
             >
-              {conn.testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
+              {conn.testStatus === 'testing' ? 'Testing…' : 'Test and save'}
             </button>
             {connectionResult}
           </div>
         </div>
       </section>
 
-      {/* ── Safety ──────────────────────────────────── */}
       <section className="card">
-        <h2>Safety</h2>
-        <p className="section-hint">
-          Conservative defaults protect your library. Change only if you understand the risk.
-        </p>
-
-        <div className="toggle-list">
-          {SAFETY_TOGGLES.map(({ key, label, hint, disabled }) => (
-            <label key={key} className={`toggle-row${disabled ? ' toggle-row--disabled' : ''}`}>
-              <input
-                type="checkbox"
-                checked={safety[key]}
-                disabled={disabled}
-                onChange={(e) => setSafety((prev) => ({ ...prev, [key]: e.target.checked }))}
-              />
-              <span>
-                <span className="toggle-label">{label}</span>
-                <span className="toggle-hint">{hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
+        <h2>Execution safety</h2>
+        <label className="toggle-row">
+          <input type="checkbox" checked={safety.requireConfirmation}
+            onChange={(e) => setSafety((prev) => ({ ...prev, requireConfirmation: e.target.checked }))} />
+          <span><span className="toggle-label">Confirm before live execution</span>
+            <span className="toggle-hint">Browser preference for this session only; resets on reload. Dry-run and Execute are separate actions.</span></span>
+        </label>
+        <h3>Always enforced by the backend</h3>
+        <ul>
+          <li>Requests default to dry-run; live execution must be explicitly requested.</li>
+          <li>Only eligible image pairs can be resolved. Favorites and other protected or unknown states are excluded.</li>
+          <li>Album preservation and trash/duplicate state must be confirmed. Cleanup uses Immich duplicate resolution; no permanent-delete action is offered.</li>
+          <li>Failed or uncertain attempts stop the batch. Uncertain attempts remain quarantined until manually assessed.</li>
+        </ul>
+        <p>These protections are fixed rules. Configurable rules and extra album warning preferences are not implemented.</p>
       </section>
 
-      {/* ── Performance ─────────────────────────────── */}
       <section className="card">
-        <h2>Performance</h2>
-
-        <div className="settings-fields">
-          <div className="settings-grid">
-            <div className="settings-field">
-              <label htmlFor="batch-size">Batch Size</label>
-              <input
-                id="batch-size"
-                type="number"
-                min={1}
-                max={500}
-                value={perf.batchSize}
-                onChange={(e) =>
-                  setPerf((prev) => ({ ...prev, batchSize: Number(e.target.value) }))
-                }
-              />
-              <span className="field-hint">Assets processed per batch.</span>
-            </div>
-
-            <div className="settings-field">
-              <label htmlFor="concurrent-requests">Concurrent Requests</label>
-              <input
-                id="concurrent-requests"
-                type="number"
-                min={1}
-                max={10}
-                value={perf.concurrentRequests}
-                onChange={(e) =>
-                  setPerf((prev) => ({ ...prev, concurrentRequests: Number(e.target.value) }))
-                }
-              />
-              <span className="field-hint">Parallel API requests allowed.</span>
-            </div>
-
-            <div className="settings-field">
-              <label htmlFor="request-delay">Request Delay (ms)</label>
-              <input
-                id="request-delay"
-                type="number"
-                min={0}
-                max={5000}
-                step={50}
-                value={perf.requestDelayMs}
-                onChange={(e) =>
-                  setPerf((prev) => ({ ...prev, requestDelayMs: Number(e.target.value) }))
-                }
-              />
-              <span className="field-hint">Delay between calls to avoid rate limits.</span>
-            </div>
-          </div>
-
-          <label className="toggle-row">
-            <input
-              type="checkbox"
-              checked={perf.cacheEnabled}
-              onChange={(e) => setPerf((prev) => ({ ...prev, cacheEnabled: e.target.checked }))}
-            />
-            <span>
-              <span className="toggle-label">Enable local cache</span>
-              <span className="toggle-hint">
-                Cache duplicate scan results to speed up repeated runs.
-              </span>
-            </span>
-          </label>
-
-          {perf.cacheEnabled && (
-            <div className="settings-field">
-              <label>Cache Location</label>
-              <div className="readonly-value">~/.immich-dedupe/cache</div>
-              <span className="field-hint">Configurable in a future release.</span>
-            </div>
-          )}
-        </div>
+        <h2>Performance and cache</h2>
+        <p>Configurable concurrency, request delays, batch-size defaults, and cache toggles are not implemented. Set scan and attempt limits in Dedupe for each request.</p>
+        <p>Scan previews are cached in browser memory. Asset sizes are cached in API process memory. There is no configurable disk cache directory.</p>
       </section>
 
       {/* ── Advanced ────────────────────────────────── */}
@@ -340,13 +225,13 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
 
         <div className="advanced-actions">
           <button type="button" onClick={handleResetCache}>
-            Reset Local Cache
+            Reset preview cache
           </button>
           <button type="button" onClick={handleExportDiagnostics}>
             Export Diagnostics
           </button>
           <button type="button" className="danger" onClick={handleClearCredentials}>
-            Clear Credentials
+            Clear form
           </button>
         </div>
       </section>

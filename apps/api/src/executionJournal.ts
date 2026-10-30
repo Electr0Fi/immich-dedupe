@@ -46,9 +46,21 @@ const scopeSchema = z.object({ apiUrl: z.string().url(), accountId: id }).refine
   const url = new URL(scope.apiUrl);
   return scope.apiUrl === `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }, "Scope URL must be normalized and contain no credentials, query or fragment");
-const runSchema = z.object({ version: z.literal(1), runId: uuid, scope: scopeSchema, startedAt: timestamp, finishedAt: timestamp.nullable(), attempts: z.array(attemptSchema) });
+const contextSchema = z.object({ dryRun: z.boolean(), scanLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), executeLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), source: z.enum(["batch", "single"]), groupId: id.nullable() });
+const reportSchema = z.object({
+  fetchedGroups: z.number().int().nonnegative(), eligibleCount: z.number().int().nonnegative(),
+  excludedGroups: z.array(z.object({ groupId: id, reason: z.enum(["processed", "legacy", "quarantined"]), attemptIds: z.array(uuid) })),
+  stoppedEarly: z.boolean(), stopReason: z.string().nullable(),
+  requestError: z.object({ status: z.number().int().min(400).max(599), code: id, message: z.string() }).nullable(),
+});
+const runFields = { runId: uuid, scope: scopeSchema, startedAt: timestamp, finishedAt: timestamp.nullable(), attempts: z.array(attemptSchema) };
+const runSchema = z.discriminatedUnion("version", [
+  z.object({ ...runFields, version: z.literal(1) }),
+  z.object({ ...runFields, version: z.literal(2), context: contextSchema, report: reportSchema.nullable() }),
+]);
 const legacySchema = z.object({ version: z.literal(1), scope: scopeSchema, importedAt: timestamp, groupIds: ids });
-export type JournalRun = Omit<z.infer<typeof runSchema>, "attempts"> & { attempts: RecoveryAttempt[] };
+type WithAttempts<T> = T extends unknown ? Omit<T, "attempts"> & { attempts: RecoveryAttempt[] } : never;
+export type JournalRun = WithAttempts<z.infer<typeof runSchema>>;
 export class JournalError extends Error {}
 export function sameScope(a: ExecutionScope, b: ExecutionScope) { return a.apiUrl === b.apiUrl && a.accountId === b.accountId; }
 export function isUnresolved(attempt: RecoveryAttempt) {
@@ -61,6 +73,17 @@ function sameIds(left: string[], right: string[]) {
 }
 function validateRun(value: unknown): JournalRun {
   const run = runSchema.parse(value);
+  if (run.version === 2) {
+    if ((run.context.source === "single") !== (run.context.groupId !== null)) throw new Error("Inconsistent run source");
+    if (run.finishedAt !== null && run.report === null) throw new Error("Missing terminal report");
+    if (run.report !== null && run.finishedAt === null) throw new Error("Unfinished terminal report");
+    if (run.attempts.length > run.context.executeLimit || run.attempts.some((a) => a.mode !== (run.context.dryRun ? "dry-run" : "execute") || (run.context.source === "single" && a.groupId !== run.context.groupId))) throw new Error("Inconsistent request context");
+    if (run.report && (run.report.eligibleCount > run.report.fetchedGroups ||
+        (run.context.source === "batch" && run.attempts.length > run.report.eligibleCount) ||
+        run.report.stoppedEarly !== (run.report.stopReason !== null) ||
+        (run.attempts.some((a) => a.result?.outcome === "failed" || a.result?.outcome === "needs-verification") && !run.report.stoppedEarly) ||
+        (run.report.requestError && !run.report.stoppedEarly))) throw new Error("Inconsistent terminal report");
+  }
   const seen = new Set<string>();
   for (const attempt of run.attempts) {
     if (attempt.runId !== run.runId || seen.has(attempt.attemptId)) throw new Error("Inconsistent attempt identity");
@@ -151,7 +174,7 @@ export function createExecutionJournal(directory: string, io: JournalFs = fs) {
       validateRun(run);
       const previous = runs.get(run.runId);
       if (previous) {
-        if (!sameScope(previous.scope, run.scope) || previous.startedAt !== run.startedAt ||
+        if (previous.version !== run.version || (previous.version === 2 && run.version === 2 && (JSON.stringify(previous.context) !== JSON.stringify(run.context) || (previous.report !== null && JSON.stringify(previous.report) !== JSON.stringify(run.report)))) || !sameScope(previous.scope, run.scope) || previous.startedAt !== run.startedAt ||
             (previous.finishedAt !== null && (previous.finishedAt !== run.finishedAt || previous.attempts.length !== run.attempts.length)) || previous.attempts.length > run.attempts.length) throw new Error("Existing run evidence cannot be replaced");
         for (const [index, before] of previous.attempts.entries()) {
           const after = run.attempts[index];

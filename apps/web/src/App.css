@@ -590,3 +590,21 @@ input[type='checkbox'] {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.outcome-summary {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  margin-top: 16px;
+}
+.run-attempt { border-top: 1px solid #dde2ea; margin-top: 18px; padding-top: 12px; }
+.run-attempt h3 { font-size: 14px; }
+.result-details dd { font-size: 13px; font-weight: 400; overflow-wrap: anywhere; margin-bottom: 12px; }
+summary { cursor: pointer; line-height: 1.6; }
+button:focus-visible, summary:focus-visible { outline: 3px solid #1a56db; outline-offset: 3px; }
+.main-content, .card { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .app-shell__body { grid-template-rows: auto minmax(0, 1fr); }
+  .sidebar { display: flex; flex-direction: row; overflow-x: auto; border-bottom: 1px solid #dde2ea; }
+  .sidebar__item { width: auto; white-space: nowrap; }
+  .app-header { padding: 0 12px; }
+  .app-header__url { display: none; }
+}

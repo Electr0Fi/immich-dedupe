@@ -1,14 +1,12 @@
 import { ExecutionResults } from '../components/ExecutionResults';
+import type { ExecutionState } from '../useExecution';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ApiError,
   getDuplicateAnalysis,
   getExecutionPlan,
   getExecutionStatus,
-  runExecution,
   type DuplicateAnalysisResponse,
   type ExecutionPlanResponse,
-  type ExecutionRunResponse,
   type ExecutionStatusResponse,
 } from '../api';
 
@@ -26,19 +24,19 @@ async function fetchSnapshot(scanLimit: number): Promise<DedupeSnapshot> {
 
 type Props = {
   requireConfirmation: boolean;
+  execution: ExecutionState;
+  onReviewRecovery: (attemptId: string) => void;
 };
 
-export function DedupeScreen({ requireConfirmation }: Props) {
+export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery }: Props) {
   const [scanLimit, setScanLimit] = useState(INITIAL_SCAN_LIMIT);
   const [executeLimit, setExecuteLimit] = useState(5);
 
   const [status, setStatus] = useState<ExecutionStatusResponse | null>(getDedupeCache()?.status ?? null);
   const [plan, setPlan] = useState<ExecutionPlanResponse | null>(getDedupeCache()?.plan ?? null);
   const [analysis, setAnalysis] = useState<DuplicateAnalysisResponse | null>(getDedupeCache()?.analysis ?? null);
-  const [lastRun, setLastRun] = useState<ExecutionRunResponse | null>(null);
 
   const [statusLoading, setStatusLoading] = useState(!getDedupeCache());
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const requestVersion = useRef(0);
@@ -67,49 +65,12 @@ export function DedupeScreen({ requireConfirmation }: Props) {
     }
   }
 
-  async function handleDryRun() {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await runExecution({ scanLimit, executeLimit, dryRun: true });
-      if (mounted.current) {
-        setLastRun(result);
-        await refresh();
-      }
-    } catch (err) {
-      if (mounted.current) {
-        if (err instanceof ApiError && err.partialExecution) setLastRun(err.partialExecution);
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      }
-    } finally {
-      if (mounted.current) setLoading(false);
-    }
-  }
-
-  async function handleExecute() {
-    if (requireConfirmation) {
-      const confirmed = window.confirm(
-        `Execute up to ${executeLimit} duplicate resolutions from the first ${scanLimit} scanned groups?`
-      );
-      if (!confirmed) return;
-    }
-
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await runExecution({ scanLimit, executeLimit, dryRun: false });
-      if (mounted.current) {
-        setLastRun(result);
-        await refresh();
-      }
-    } catch (err) {
-      if (mounted.current) {
-        if (err instanceof ApiError && err.partialExecution) setLastRun(err.partialExecution);
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      }
-    } finally {
-      if (mounted.current) setLoading(false);
-    }
+  async function handleRun(dryRun: boolean) {
+    if (!dryRun && requireConfirmation && !window.confirm(
+      `Execute up to ${executeLimit} duplicate resolutions from the first ${scanLimit} scanned groups?`
+    )) return;
+    await execution.execute({ scanLimit, executeLimit, dryRun });
+    if (mounted.current) await refresh();
   }
 
   useEffect(() => {
@@ -138,7 +99,7 @@ export function DedupeScreen({ requireConfirmation }: Props) {
   const manualReviewItems =
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
 
-  const buttonsDisabled = loading || statusLoading;
+  const buttonsDisabled = execution.busy || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
 
   return (
     <div>
@@ -176,16 +137,18 @@ export function DedupeScreen({ requireConfirmation }: Props) {
           <button disabled={buttonsDisabled} onClick={() => refresh()}>
             Refresh
           </button>
-          <button disabled={buttonsDisabled} onClick={handleDryRun}>
+          <button disabled={buttonsDisabled} onClick={() => handleRun(true)}>
             Dry run
           </button>
-          <button disabled={buttonsDisabled} className="danger" onClick={handleExecute}>
+          <button disabled={buttonsDisabled} className="danger" onClick={() => handleRun(false)}>
             Execute
           </button>
         </div>
 
-        {error && <p className="error">{error}</p>}
+        {error && <p className="error" role="alert">Preview refresh failed: {error}. Execution results below are preserved.</p>}
       </section>
+
+      <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
 
       <section className="grid">
         <div className="card">
@@ -219,35 +182,12 @@ export function DedupeScreen({ requireConfirmation }: Props) {
           )}
         </div>
 
-        <div className="card">
-          <h2>Last Run</h2>
-          {lastRun ? (
-            <dl className="stats">
-              <div>
-                <dt>Dry run</dt>
-                <dd>{String(lastRun.dryRun)}</dd>
-              </div>
-              <div>
-                <dt>Eligible</dt>
-                <dd>{lastRun.eligibleCount}</dd>
-              </div>
-              <div>
-                <dt>Executed</dt>
-                <dd>{lastRun.actuallyExecutedCount}</dd>
-              </div>
-              <div>
-                <dt>Trashed</dt>
-                <dd>{lastRun.trashedCount}</dd>
-              </div>
-            </dl>
-          ) : (
-            <p>No run yet.</p>
-          )}
-        </div>
+
       </section>
 
       <section className="card">
         <h2>Execution Plan Preview</h2>
+        <p className="field-hint">Confidence is a fixed rule score. Execution repeats fresh safety checks and may exclude processed or quarantined groups shown in this preview.</p>
         {statusLoading ? (
           <div className="status-refreshing">
             <span className="spinner" />
@@ -320,7 +260,7 @@ export function DedupeScreen({ requireConfirmation }: Props) {
         )}
       </section>
 
-      <ExecutionResults run={lastRun} />
+
     </div>
   );
 }

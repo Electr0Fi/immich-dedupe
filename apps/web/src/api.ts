@@ -1,14 +1,21 @@
+import type { RunViewResponse } from '@immich-dedupe/shared';
+export type { RunView, RunViewResponse } from '@immich-dedupe/shared';
+
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
 
 export class ApiError extends Error {
   status: number;
   partialExecution?: ExecutionRunResponse;
-  constructor(status: number, message: string, partialExecution?: ExecutionRunResponse) {
+  code?: string;
+  runId?: string;
+  constructor(status: number, message: string, partialExecution?: ExecutionRunResponse, code?: string, runId?: string) {
     super(`HTTP ${status}: ${message}`);
     this.name = 'ApiError';
     this.status = status;
     this.partialExecution = partialExecution;
+    this.code = code;
+    this.runId = runId;
   }
 }
 
@@ -17,7 +24,8 @@ async function readResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const partial = data?.partialExecution;
     throw new ApiError(response.status, typeof data?.error === 'string' ? data.error : response.statusText,
-      partial && Array.isArray(partial.results) && typeof partial.runId === 'string' ? partial : undefined);
+      partial && Array.isArray(partial.results) && typeof partial.runId === 'string' ? partial : undefined,
+      typeof data?.code === 'string' ? data.code : undefined, typeof data?.runId === 'string' ? data.runId : undefined);
   }
   if (data === null) throw new Error('The API returned an invalid JSON response');
   return data;
@@ -158,6 +166,9 @@ export function getExecutionStatus(scanLimit: number) {
     `/execution/status?scanLimit=${scanLimit}`
   );
 }
+
+export function getLatestRun() { return apiGet<RunViewResponse>('/execution/runs/latest'); }
+export function getRun(runId: string) { return apiGet<RunViewResponse>(`/execution/runs/${encodeURIComponent(runId)}`); }
 
 export function getExecutionPlan(scanLimit: number) {
   return apiGet<ExecutionPlanResponse>(

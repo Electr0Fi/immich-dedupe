@@ -154,7 +154,7 @@ Clearing display logs preserves journal records, completed-history exclusions, q
 
 ## Durable recovery evidence
 
-`apps/api/data/execution-journal/` holds one version-1 JSON file per run and a separate `legacy-exclusions.json`. The store loads lazily so app construction stays side-effect free. Records validate IDs, checkpoint order, album requirements, outcomes and scope. Interrupted temporary files are retained but never promoted. Writes flush a same-directory temporary file, rename it atomically, then flush the directory; directory fsync is required (validated on Linux). Filesystem operations are injectable for fault tests.
+`apps/api/data/execution-journal/` holds one versioned JSON file per run (version 2 for new runs; version 1 remains readable) and a separate `legacy-exclusions.json`. The store loads lazily so app construction stays side-effect free. Records validate IDs, checkpoint order, album requirements, outcomes and scope. Interrupted temporary files are retained but never promoted. Writes flush a same-directory temporary file, rename it atomically, then flush the directory; directory fsync is required (validated on Linux). Filesystem operations are injectable for fault tests.
 
 An attempt is saved before processing. Fresh preflight records include original selections, safety details and loser album requirements. A durable intent must complete before each album-add or resolution call. Subsequent checkpoints capture sanitized responses, confirmed album additions, and each verification round. Terminal results are saved before the separate display-log append. Run completion follows all attempts. No API keys are stored.
 
@@ -214,22 +214,32 @@ curl -X POST http://localhost:3001/execution/run \
 
 ## Frontend behavior and unfinished settings
 
-The shell uses React state for navigation, with no router, URL routes, or persistent settings store. Switching screens unmounts them. Dedupe keeps module-level status/plan/analysis caches across navigation, but these are not keyed by scan limit. Changing a limit needs Refresh to update the preview; execution always sends the current inputs and the server recalculates decisions rather than executing an immutable preview. Local limits and last-run results reset on remount.
+The shell uses React state for navigation, with no router, URL routes, or persistent settings store. Switching screens unmounts them. Dedupe keeps module-level status/plan/analysis caches across navigation, but these are not keyed by scan limit. Changing a limit needs Refresh to update the preview; execution always sends the current inputs and the server recalculates decisions rather than executing an immutable preview. Local limits reset on remount. Run state and in-flight requests belong to the shell and survive navigation; Dedupe reads the latest scoped journal run when opened and offers an explicit Refresh latest action.
 
 Each refresh concurrently requests status, plan, and analysis. Each backend route independently repeats the duplicate/enrichment workflow, including album indexing. Cached file sizes can still trigger duplicate fetches when concurrent requests race on an initially empty cache.
 
-Logs includes a paginated Execution Recovery panel with evidence, recheck, and confirmed release actions. Unavailable storage/identity and active-run states are explicit, and HTTP error partial results remain visible. The display-log table shows the newest 20 entries, with exports covering the full log. History is a static placeholder. The app uses plain CSS; at widths below 900 px, the sidebar disappears with no replacement navigation.
+Logs includes a paginated Execution Recovery panel with evidence, recheck, and confirmed release actions. Unavailable storage/identity and active-run states are explicit, and HTTP error partial results remain visible. The display-log table shows the newest 20 entries, with exports covering the full log. History is a static placeholder. The app uses plain CSS; at widths below 900 px, navigation becomes a horizontal scrolling bar.
 
 Settings implementation details:
 
-- Test Connection tests and then saves the credentials. It does not reinitialize the running SDK, and does not inspect a save response's `ok` flag before showing success.
-- Require confirmation is the only enabled safety toggle, held in shell memory. It gates the browser confirm dialog, not backend authorization.
-- Other safety toggles remain disabled placeholders; backend code independently enforces eligibility and a default dry-run. The explicit Execute button sends `dryRun: false`.
-- Performance inputs only change component state and diagnostic exports. They do not configure batch size, API concurrency, delay, or caches, and reset when Settings unmounts.
-- The displayed `~/.immich-dedupe/cache` path is a placeholder. Actual caches are in browser-module memory and the app-scoped backend file-size map.
-- Reset Local Cache clears the frontend module cache only. It does not clear backend file sizes.
-- Clear Credentials only clears the current form state. It does not erase `.env` or active SDK credentials.
-- Diagnostics exports the current form/preferences and omits the API key.
+- Test and save tests the supplied connection and writes configuration. Restart the API to apply it and reload to refresh header status. This test does not verify identity/cleanup permissions.
+- Confirm before live execution is the only safety preference, held in shell memory and reset on reload. Backend safety requirements are fixed explanatory text, not editable switches.
+- Performance and cache configuration is explicitly not implemented. No editable performance fields or fictional disk cache directory are shown.
+- Reset preview cache clears browser scan previews only; backend sizes, logs and recovery records remain.
+- Clear form clears only the current form; saved and active credentials remain.
+- Diagnostics includes the current form URL, key-configured flag, connection test status/version and session confirmation preference. No key or unimplemented performance preferences are exported.
+
+## Latest-run read model and outcome explanations
+
+`GET /execution/runs/latest` returns `{ ok, scope, run }`, with null run when no journal run exists for the current normalized API URL/account. `GET /execution/runs/:runId` returns the same compact shape or 404 for unknown/other-scope IDs (400 for invalid UUIDs). Identity/storage failure returns 503. Reads neither migrate legacy logs nor write files or call Immich mutations. They can run during execution. No history-list endpoint is added.
+
+New version-2 records retain immutable request context (dry-run, scan/attempt limits, batch/single source and selected group) and a terminal report with scanned/eligible counts, exclusion reasons, stop reason and request error. Version-1 records are read unchanged; missing context/report remains null. A completed run has a report even when scanning or the display-log append failed. Checkpoint-write failures retain prior durable evidence and return partial results; they do not fabricate completion. Older application versions cannot read version 2: do not downgrade against the same data directory.
+
+Shared `RunView`/`RunViewResponse` contracts expose timestamps, request/report metadata and compact attempts (terminal result, last stage, confirmed albums, latest assessment and quarantine/release status). They omit checkpoint snapshots, which stay in recovery detail. Phase is running for the active coordinator, finished for recorded completion, and interrupted otherwise. A finished run may contain failed or uncertain attempts; it is not a claim that cleanup succeeded.
+
+Dedupe summarizes verified completed, simulated, failed, needs verification and awaiting-result attempts, plus processed/legacy/quarantined exclusions. Technical IDs, proposed/confirmed albums and failure stages are expandable. Review recovery opens the exact attempt independently of list pagination, focuses the evidence, supports already-closed attempts and offers Back to results. Subsequent assessments do not rewrite historical outcomes.
+
+The shell retains pending requests/results through navigation. Latest is scoped to the server account, includes other-tab requests and is restored when Dedupe opens after reload; Welcome stays the default page. Refresh latest performs a read with no automatic polling, retries or cleanup. Stale responses cannot replace a newer request. Pending work, rejected requests, lost responses (unknown, possibly still running), and preview-refresh errors are separate. Returned partial-response evidence is retained separately from journal reads during the browser session: unsaved facts cannot be restored after reload. A changed verified scope clears old partial evidence.
 
 ## Current Functionality and remaining limitations
 
@@ -244,7 +254,7 @@ Remaining operational limits:
 - Single-group and batch executions now share logging and exclusions. Display logs can be cleared independently of recovery evidence. JSON journal storage is not a multi-process database.
 - Preview caches remain app-scoped and without expiry. Execution uses fresh data, but previews can become stale. Path classification is still hardcoded.
 - The local API is unauthenticated, permits cross-origin requests, does not explicitly bind only to loopback, and returns the saved key through connection settings. Keep it within a trusted local environment.
-- Connection saving checks truthiness, writes unquoted `.env` values, and requires an API restart. Clear Credentials clears the form only. Most preference/performance controls remain placeholders.
+- Connection saving checks truthiness, writes unquoted `.env` values, and requires an API restart. Clear form clears the form only. Performance configuration remains unimplemented and is explained in static text.
 
 ## Build, validation, and maintenance
 
@@ -252,6 +262,7 @@ Run these checks from the repository root:
 
 ```bash
 pnpm test
+pnpm test:ui
 pnpm typecheck
 pnpm lint
 pnpm build
@@ -266,3 +277,5 @@ pnpm build
 PR 2 deliberately changes execution defaults and eligibility: omitted modes simulate, non-images/protected/unknown assets cannot auto-resolve, and failed/uncertain attempts stop batches. Tests do not contact a live Immich server or prove compatibility with a particular server deployment. A browser-based interaction smoke test still needs to be performed in an environment with a browser.
 
 For future edits, start with the relevant source files in the map above. Keep rule evaluation deterministic, preserve album-transfer-before-resolution ordering, explicitly use `dryRun: true` for execution verification, and inspect per-group outcomes. Update this guide when paths, API contracts, settings behavior, or execution guarantees change.
+
+Browser tests in `apps/web/tests` use Playwright Chromium, a dedicated Vite server, and intercepted fake backend responses. Install prerequisites with `pnpm --filter web exec playwright install --with-deps chromium`; run `pnpm test:ui`. They never require a real API or Immich server. Keep reload/navigation, HTTP 409/503, unknown/partial outcomes, recovery links/confirmation, keyboard details and narrow-layout coverage when modifying outcome UI.
