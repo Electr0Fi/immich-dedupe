@@ -1,15 +1,6 @@
 import fs from "fs";
 import path from "path";
 
-const DATA_DIR = path.join(__dirname, "..", "data");
-const LOG_PATH = path.join(DATA_DIR, "execution-log.json");
-
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-}
-
 export type ExecutionLogEntry = {
   timestamp: string;
   groupId: string;
@@ -22,45 +13,55 @@ export type ExecutionLogEntry = {
   message: string;
 };
 
-export function loadExecutionLog(): ExecutionLogEntry[] {
-  ensureDataDir();
-  if (!fs.existsSync(LOG_PATH)) {
-    return [];
+export function createExecutionLog(logPath: string) {
+  const dataDir = path.dirname(logPath);
+  function ensureDataDir() {
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  }
+  function loadExecutionLog(): ExecutionLogEntry[] {
+    ensureDataDir();
+    if (!fs.existsSync(logPath)) {
+      return [];
+    }
+
+    try {
+      return JSON.parse(fs.readFileSync(logPath, "utf-8"));
+    } catch {
+      return [];
+    }
   }
 
-  try {
-    return JSON.parse(fs.readFileSync(LOG_PATH, "utf-8"));
-  } catch {
-    return [];
+  function appendExecutionLog(entry: ExecutionLogEntry) {
+    ensureDataDir();
+    const existing = loadExecutionLog();
+    existing.push(entry);
+    fs.writeFileSync(logPath, JSON.stringify(existing, null, 2));
   }
+
+  function clearExecutionLog(): number {
+    ensureDataDir();
+    const existing = loadExecutionLog();
+    fs.writeFileSync(logPath, JSON.stringify([], null, 2));
+
+    return existing.length;
+  }
+
+  function getProcessedGroupIds(): Set<string> {
+    return new Set(
+      loadExecutionLog()
+        .filter((entry) => entry.mode === "execute")
+        .filter((entry) => entry.executed)
+        .filter((entry) => entry.resolvedDuplicate)
+        .filter((entry) => entry.trashedAsset)
+        .map((entry) => entry.groupId)
+    );
+  }
+
+  function getExecutionLogPath(): string {
+    return logPath;
+  }
+
+  return { loadExecutionLog, appendExecutionLog, clearExecutionLog, getProcessedGroupIds, getExecutionLogPath };
 }
 
-export function appendExecutionLog(entry: ExecutionLogEntry) {
-  ensureDataDir();
-  const existing = loadExecutionLog();
-  existing.push(entry);
-  fs.writeFileSync(LOG_PATH, JSON.stringify(existing, null, 2));
-}
-
-export function clearExecutionLog(): number {
-  ensureDataDir();
-  const existing = loadExecutionLog();
-  fs.writeFileSync(LOG_PATH, JSON.stringify([], null, 2));
-
-  return existing.length;
-}
-
-export function getProcessedGroupIds(): Set<string> {
-  return new Set(
-    loadExecutionLog()
-      .filter((entry) => entry.mode === "execute")
-      .filter((entry) => entry.executed)
-      .filter((entry) => entry.resolvedDuplicate)
-      .filter((entry) => entry.trashedAsset)
-      .map((entry) => entry.groupId)
-  );
-}
-
-export function getExecutionLogPath(): string {
-  return LOG_PATH;
-}
+export type ExecutionLog = ReturnType<typeof createExecutionLog>;

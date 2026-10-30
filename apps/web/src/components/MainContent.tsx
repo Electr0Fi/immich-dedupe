@@ -4,7 +4,8 @@ import { WelcomeScreen } from '../screens/WelcomeScreen';
 import { DedupeScreen } from '../screens/DedupeScreen';
 import { HistoryScreen } from '../screens/HistoryScreen';
 import { LogsScreen } from '../screens/LogsScreen';
-import { SettingsScreen, type SafetyConfig } from '../screens/SettingsScreen';
+import { SettingsScreen } from '../screens/SettingsScreen';
+import type { SafetyConfig } from '../settings';
 
 type Props = {
   active: NavItemId;

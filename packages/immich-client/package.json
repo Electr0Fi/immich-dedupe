@@ -7,6 +7,6 @@
   "scripts": {
     "build": "echo immich-client build not set yet",
     "lint": "echo immich-client lint not set yet",
-    "typecheck": "echo immich-client typecheck not set yet"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

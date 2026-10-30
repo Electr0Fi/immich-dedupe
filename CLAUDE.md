@@ -7,7 +7,7 @@ A local TypeScript monorepo for safely analyzing and resolving Immich duplicate 
 - **Language**: TypeScript
 - **Database**: JSON file logging (future DB planned)
 - **Styling**: Plain CSS
-- **Testing**: Manual curl/API verification + TypeScript typechecking
+- **Testing**: Node test runner with tsx, fake Immich dependencies, TypeScript typechecking
 
 ## Project Structure
 ```text
@@ -27,7 +27,9 @@ pnpm --filter api dev           # Run backend API
 pnpm --filter web dev           # Run frontend dashboard
 pnpm --filter api typecheck     # Typecheck backend
 pnpm --filter web typecheck     # Typecheck frontend
-pnpm -r typecheck               # Typecheck entire monorepo
+pnpm typecheck                  # Typecheck workspace and API test sources
+pnpm test                       # Run isolated regression tests
+pnpm lint                       # Frontend ESLint only
 ```
 
 ## Code Standards
@@ -43,7 +45,7 @@ pnpm -r typecheck               # Typecheck entire monorepo
 - All Immich SDK calls must happen inside `apps/api`
 - Use `POST /duplicates/resolve` for duplicate cleanup
 - Never use `DELETE /duplicates/:id` to trash assets
-- Frontend must never contain Immich API keys
+- Keep credentials out of frontend bundles and logs; the existing settings endpoint still returns the saved key and needs correction in a later change
 - Album memberships must be transferred before resolving duplicates
 - Duplicate execution must verify `isTrashed === true`
 - Dry-runs must never modify Immich state
@@ -52,7 +54,7 @@ pnpm -r typecheck               # Typecheck entire monorepo
 ## Important Notes
 - Backend environment variables live in `apps/api/.env`
 - Frontend environment variables live in `apps/web/.env`
-- Current execution log path is `apps/api/src/execution-log.json`
+- Current execution log path is `apps/api/data/execution-log.json`
 - Trashed assets may still be returned from `GET /assets/:id`
 - Successful duplicate resolution results in:
   - `"isTrashed": true`
@@ -74,3 +76,4 @@ pnpm -r typecheck               # Typecheck entire monorepo
 - 2026-05-11: Condensed file contents
 
 <!-- Template taken from https://www.gradually.ai/en/claude-md/ -->
+- App factory: `apps/api/src/app.ts`; production startup: `apps/api/src/index.ts`. Inject dependencies for tests; never initialize the real SDK or touch production logs in tests.

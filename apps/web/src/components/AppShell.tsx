@@ -3,7 +3,7 @@ import { Header, type ConnectionStatus } from './Header';
 import { Sidebar } from './Sidebar';
 import { MainContent } from './MainContent';
 import { type NavItemId } from './nav';
-import { DEFAULT_SAFETY, type SafetyConfig } from '../screens/SettingsScreen';
+import { DEFAULT_SAFETY, type SafetyConfig } from '../settings';
 import { getServerStatus } from '../api';
 
 export function AppShell() {

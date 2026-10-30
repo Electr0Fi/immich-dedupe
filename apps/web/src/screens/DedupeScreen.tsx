@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getDuplicateAnalysis,
   getExecutionPlan,
@@ -10,15 +10,16 @@ import {
   type ExecutionStatusResponse,
 } from '../api';
 
-// Module-level cache — survives mount/unmount so navigating away and back skips re-fetch.
-let cachedStatus: ExecutionStatusResponse | null = null;
-let cachedPlan: ExecutionPlanResponse | null = null;
-let cachedAnalysis: DuplicateAnalysisResponse | null = null;
+import {
+  getDedupeCache, getDedupeCacheGeneration, setDedupeCache, type DedupeSnapshot,
+} from '../dedupeCache';
 
-export function clearDedupeCache() {
-  cachedStatus = null;
-  cachedPlan = null;
-  cachedAnalysis = null;
+const INITIAL_SCAN_LIMIT = 100;
+async function fetchSnapshot(scanLimit: number): Promise<DedupeSnapshot> {
+  const [status, plan, analysis] = await Promise.all([
+    getExecutionStatus(scanLimit), getExecutionPlan(scanLimit), getDuplicateAnalysis(scanLimit),
+  ]);
+  return { status, plan, analysis };
 }
 
 type Props = {
@@ -26,37 +27,41 @@ type Props = {
 };
 
 export function DedupeScreen({ requireConfirmation }: Props) {
-  const [scanLimit, setScanLimit] = useState(100);
+  const [scanLimit, setScanLimit] = useState(INITIAL_SCAN_LIMIT);
   const [executeLimit, setExecuteLimit] = useState(5);
 
-  const [status, setStatus] = useState<ExecutionStatusResponse | null>(cachedStatus);
-  const [plan, setPlan] = useState<ExecutionPlanResponse | null>(cachedPlan);
-  const [analysis, setAnalysis] = useState<DuplicateAnalysisResponse | null>(cachedAnalysis);
+  const [status, setStatus] = useState<ExecutionStatusResponse | null>(getDedupeCache()?.status ?? null);
+  const [plan, setPlan] = useState<ExecutionPlanResponse | null>(getDedupeCache()?.plan ?? null);
+  const [analysis, setAnalysis] = useState<DuplicateAnalysisResponse | null>(getDedupeCache()?.analysis ?? null);
   const [lastRun, setLastRun] = useState<ExecutionRunResponse | null>(null);
 
-  const [statusLoading, setStatusLoading] = useState(!cachedStatus);
+  const [statusLoading, setStatusLoading] = useState(!getDedupeCache());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const requestVersion = useRef(0);
+  const mounted = useRef(false);
+  const applySnapshot = useCallback((snapshot: DedupeSnapshot, generation: number) => {
+    setDedupeCache(snapshot, generation);
+    setStatus(snapshot.status);
+    setPlan(snapshot.plan);
+    setAnalysis(snapshot.analysis);
+  }, []);
+
   async function refresh() {
+    const version = ++requestVersion.current;
+    const generation = getDedupeCacheGeneration();
     setStatusLoading(true);
     setError(null);
     try {
-      const [statusResult, planResult, analysisResult] = await Promise.all([
-        getExecutionStatus(scanLimit),
-        getExecutionPlan(scanLimit),
-        getDuplicateAnalysis(scanLimit),
-      ]);
-      cachedStatus = statusResult;
-      cachedPlan = planResult;
-      cachedAnalysis = analysisResult;
-      setStatus(statusResult);
-      setPlan(planResult);
-      setAnalysis(analysisResult);
+      const snapshot = await fetchSnapshot(scanLimit);
+      if (mounted.current && version === requestVersion.current) applySnapshot(snapshot, generation);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (mounted.current && version === requestVersion.current) {
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
     } finally {
-      setStatusLoading(false);
+      if (mounted.current && version === requestVersion.current) setStatusLoading(false);
     }
   }
 
@@ -65,12 +70,14 @@ export function DedupeScreen({ requireConfirmation }: Props) {
     setError(null);
     try {
       const result = await runExecution({ scanLimit, executeLimit, dryRun: true });
-      setLastRun(result);
-      await refresh();
+      if (mounted.current) {
+        setLastRun(result);
+        await refresh();
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (mounted.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }
 
@@ -86,20 +93,39 @@ export function DedupeScreen({ requireConfirmation }: Props) {
     setError(null);
     try {
       const result = await runExecution({ scanLimit, executeLimit, dryRun: false });
-      setLastRun(result);
-      await refresh();
+      if (mounted.current) {
+        setLastRun(result);
+        await refresh();
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (mounted.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }
 
   useEffect(() => {
-    if (!cachedStatus) {
-      refresh();
+    mounted.current = true;
+    const version = ++requestVersion.current;
+    const generation = getDedupeCacheGeneration();
+    if (!getDedupeCache()) {
+      fetchSnapshot(INITIAL_SCAN_LIMIT)
+        .then((snapshot) => {
+          if (mounted.current && version === requestVersion.current) applySnapshot(snapshot, generation);
+        })
+        .catch((err: unknown) => {
+          if (mounted.current && version === requestVersion.current) {
+            setError(err instanceof Error ? err.message : 'Unknown error');
+          }
+        })
+        .finally(() => {
+          if (mounted.current && version === requestVersion.current) setStatusLoading(false);
+        });
     }
-  }, []);
+    return () => {
+      mounted.current = false;
+    };
+  }, [applySnapshot]);
 
   const manualReviewItems =
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];

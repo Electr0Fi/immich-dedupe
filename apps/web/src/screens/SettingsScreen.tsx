@@ -1,6 +1,7 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
 import { getConnectionConfig, saveConnectionConfig, testConnection } from '../api';
-import { clearDedupeCache } from './DedupeScreen';
+import { clearDedupeCache } from '../dedupeCache';
+import { DEFAULT_PERFORMANCE, type SafetyConfig, type PerformanceConfig } from '../settings';
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
 
@@ -13,22 +14,6 @@ type ConnectionState = {
   serverVersion: string | null;
 };
 
-export type SafetyConfig = {
-  dryRunByDefault: boolean;
-  requireConfirmation: boolean;
-  preferTrash: boolean;
-  blockPermanentDelete: boolean;
-  warnFavorites: boolean;
-  warnMultipleAlbums: boolean;
-};
-
-export type PerformanceConfig = {
-  batchSize: number;
-  concurrentRequests: number;
-  requestDelayMs: number;
-  cacheEnabled: boolean;
-};
-
 const DEFAULT_CONNECTION: ConnectionState = {
   immichUrl: '',
   apiKey: '',
@@ -36,22 +21,6 @@ const DEFAULT_CONNECTION: ConnectionState = {
   testStatus: 'idle',
   testMessage: '',
   serverVersion: null,
-};
-
-export const DEFAULT_SAFETY: SafetyConfig = {
-  dryRunByDefault: true,
-  requireConfirmation: true,
-  preferTrash: true,
-  blockPermanentDelete: true,
-  warnFavorites: true,
-  warnMultipleAlbums: true,
-};
-
-export const DEFAULT_PERFORMANCE: PerformanceConfig = {
-  batchSize: 50,
-  concurrentRequests: 3,
-  requestDelayMs: 200,
-  cacheEnabled: true,
 };
 
 const SAFETY_TOGGLES: Array<{ key: keyof SafetyConfig; label: string; hint: string; disabled?: boolean }> = [

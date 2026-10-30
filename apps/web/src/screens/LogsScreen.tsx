@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   clearExecutionLog,
   getExecutionLog,
@@ -11,10 +11,14 @@ export function LogsScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const mounted = useRef(false);
+  const requestVersion = useRef(0);
+
   async function refresh() {
+    const version = ++requestVersion.current;
     setError(null);
     const result = await getExecutionLog();
-    setLog(result.data);
+    if (mounted.current && version === requestVersion.current) setLog(result.data);
   }
 
   async function handleClearLog() {
@@ -27,11 +31,11 @@ export function LogsScreen() {
     setError(null);
     try {
       await clearExecutionLog();
-      await refresh();
+      if (mounted.current) await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (mounted.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }
 
@@ -40,9 +44,20 @@ export function LogsScreen() {
   }
 
   useEffect(() => {
-    refresh().catch((err) =>
-      setError(err instanceof Error ? err.message : 'Unknown error')
-    );
+    mounted.current = true;
+    const version = ++requestVersion.current;
+    getExecutionLog()
+      .then((result) => {
+        if (mounted.current && version === requestVersion.current) setLog(result.data);
+      })
+      .catch((err: unknown) => {
+        if (mounted.current && version === requestVersion.current) {
+          setError(err instanceof Error ? err.message : 'Unknown error');
+        }
+      });
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
   return (

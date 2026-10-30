@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "pnpm --parallel --filter web --filter api dev",
     "build": "pnpm --filter web build && pnpm --filter api build",
-    "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck"
+    "lint": "pnpm --filter web lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter api test"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

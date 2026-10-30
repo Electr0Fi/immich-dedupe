@@ -7,6 +7,6 @@
   "scripts": {
     "build": "echo shared build not set yet",
     "lint": "echo shared lint not set yet",
-    "typecheck": "echo shared typecheck not set yet"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }
