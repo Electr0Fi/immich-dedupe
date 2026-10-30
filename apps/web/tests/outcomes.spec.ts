@@ -53,6 +53,7 @@ async function fakeApi(page: Page, initial: RunView | null = runView()) {
     let json: unknown;
     switch (url.pathname) {
       case '/execution/plans': { const input = request.postDataJSON(); json = { ok: true, plan: reviewPlan(input.scanLimit, input.executeLimit) }; break; }
+      case '/execution/quick-reviews': { const input = request.postDataJSON(); json = { ok: true, quickReview: quickReviewFixture(8, input.scanLimit, input.executeLimit) }; break; }
       case `/execution/plans/${runId}/run`: json = executionResponse(state.latest ?? runView()); break;
       case `/execution/plans/${runId}/assets/keeper/thumbnail`:
       case `/execution/plans/${runId}/assets/loser/thumbnail`: return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT8sAAAAASUVORK5CYII=', 'base64') });
@@ -448,8 +449,8 @@ type PreparationTestWindow = Window & { preparationTest: {
   push: (event: unknown) => void; raw: (text: string) => void; finish: () => void;
   cancelCalls: number; rejectCancel: boolean;
 } };
-async function startStreamedPreparation(page: Page) {
-  await fakeApi(page, null);
+async function startStreamedPreparation(page: Page, quick = false) {
+  const state = await fakeApi(page, null);
   await page.goto('/');
   await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
@@ -464,7 +465,7 @@ async function startStreamedPreparation(page: Page) {
     };
     (window as unknown as PreparationTestWindow).preparationTest = harness;
     window.fetch = async (input, init) => {
-      if (String(input).endsWith('/execution/plans') && init?.method === 'POST') {
+      if ((String(input).endsWith('/execution/plans') || String(input).endsWith('/execution/quick-reviews')) && init?.method === 'POST') {
         return new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }), { headers: { 'Content-Type': 'application/x-ndjson' } });
       }
       if (String(input).includes('/execution/preparations/') && String(input).endsWith('/cancel')) {
@@ -475,8 +476,10 @@ async function startStreamedPreparation(page: Page) {
       return original(input, init);
     };
   });
+  if (quick) await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).check();
   await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Cancel review', exact: true })).toBeEnabled();
+  return state;
 }
 async function pushProgress(page: Page, checkedGroups = 1) {
   await page.evaluate(({ runId, checkedGroups }) => {
@@ -759,4 +762,139 @@ test('missing Select All route gives restart guidance and preserves the existing
   await expect(page.getByLabel('Execute Limit', { exact: true })).toHaveValue('1');
   await expect(page.getByRole('button', { name: 'Select All', exact: true })).toBeEnabled();
   expect(calls).toBe(1);
+});
+
+function quickReviewFixture(count = 8, scanLimit = 100, executeLimit = 5) {
+  const full = reviewWithCandidates(executeLimit, count);
+  const candidates = full.candidates.map((candidate) => {
+    const keepAsset = { ...candidate.keepAsset }, trashAsset = { ...candidate.trashAsset };
+    Reflect.deleteProperty(keepAsset, 'albums'); Reflect.deleteProperty(trashAsset, 'albums');
+    return { groupId: candidate.groupId, keepAsset, trashAsset, decision: candidate.decision };
+  });
+  return { reviewId: runId, scope, scanLimit, executeLimit, createdAt: full.createdAt, expiresAt: full.expiresAt,
+    fetchedGroups: count + 1, totalGroups: count + 1, candidates, excludedGroups: full.excludedGroups,
+    preparation: { status: 'completed', checkedGroups: count + 1, targetGroups: count + 1 } };
+}
+function previewCalls(calls: string[]) { return calls.filter((call) => /^GET \/(execution\/(status|plan)|analysis\/duplicates)$/.test(call)); }
+
+test('Quick Review skips images and legacy refreshes, supports Select All and loads only the selected details', async ({ page }) => {
+  const state = await fakeApi(page, null); await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
+  const before = previewCalls(state.calls);
+  await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).check();
+  await page.getByLabel('Scan Limit', { exact: true }).fill('1000');
+  await expect(page.getByRole('button', { name: 'Refresh previews', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Quick Review — provisional results' })).toBeVisible();
+  await page.getByRole('button', { name: 'Expand All', exact: true }).click();
+  await expect(page.locator('.review-thumbnail')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  expect(previewCalls(state.calls)).toEqual(before);
+  expect(state.calls.some((call) => call.includes('/thumbnail'))).toBe(false);
+  await page.getByRole('button', { name: 'Select All', exact: true }).click();
+  await expect(page.getByLabel('Execute Limit', { exact: true })).toHaveValue('8');
+  await expect(page.getByRole('checkbox', { name: /^Include group/, checked: true })).toHaveCount(8);
+  expect(state.calls.some((call) => call.endsWith('/select-all'))).toBe(false);
+  await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Include group group-0', exact: true }).check();
+  const detailed = reviewWithCandidates(8, 1); detailed.planId = attemptId;
+  await page.route(`**/execution/quick-reviews/${runId}/prepare-plan`, (route) => {
+    expect(route.request().postDataJSON()).toEqual({ selectedGroupIds: ['group-0'], executeLimit: 8 });
+    return route.fulfill({ json: { ok: true, plan: detailed } });
+  });
+  await page.getByRole('button', { name: 'Load selected details', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Quick Review — provisional results' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Details for group group-0', exact: true }).click();
+  await expect(page.getByText('Proposed additions to keeper: Family', { exact: true })).toBeVisible();
+  state.latest = runView();
+  await page.route(`**/execution/plans/${attemptId}/run`, (route) => route.fulfill({ json: { ...executionResponse(state.latest!), planId: attemptId } }));
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeEnabled();
+  expect(previewCalls(state.calls)).toEqual(before);
+  await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).uncheck();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: /^Include group/ })).toHaveCount(0);
+});
+
+test('Quick Review keeps unverified groups excluded and preserves provisional selection on detail-loading failure', async ({ page }) => {
+  await fakeApi(page, null); await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).check();
+  const snapshot = quickReviewFixture(2);
+  snapshot.excludedGroups.push({ groupId: 'missing-size', reason: 'unverified', attemptIds: [], message: 'Not verified in Quick Review: missing file size. Extra reads were skipped.' });
+  snapshot.fetchedGroups++; snapshot.totalGroups++; snapshot.preparation.checkedGroups++; snapshot.preparation.targetGroups++;
+  await page.route('**/execution/quick-reviews', (route) => route.fulfill({ json: { ok: true, quickReview: snapshot } }));
+  await page.route(`**/execution/quick-reviews/${runId}/prepare-plan`, (route) => route.fulfill({ status: 409, json: { code: 'plan_changed', error: 'Selected quick results changed; prepare a new review', changedGroups: [{ groupId: 'group-0', reasons: ['Keeper metadata changed since Quick Review'] }] } }));
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await page.getByRole('button', { name: 'Expand All', exact: true }).click();
+  await expect(page.getByText('Not verified in Quick Review: missing file size. Extra reads were skipped.')).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'Include group missing-size', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Load selected details', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Keeper metadata changed since Quick Review');
+  await expect(page.getByRole('checkbox', { name: /^Include group/, checked: true })).toHaveCount(2);
+  await expect(page.getByRole('heading', { name: 'Quick Review — provisional results' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+});
+
+test('quick cancellation retains provisional results and requests survive navigation without new preview enrichment', async ({ page }) => {
+  const state = await startStreamedPreparation(page, true);
+  const before = previewCalls(state.calls);
+  await pushProgress(page, 1);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: 'Quick Review', exact: true })).toBeChecked();
+  await page.getByRole('button', { name: 'Cancel review', exact: true }).click();
+  const snapshot = { ...quickReviewFixture(1), fetchedGroups: 1, excludedGroups: [], preparation: { status: 'cancelled', checkedGroups: 1, targetGroups: 100 } };
+  await page.evaluate((snapshot) => {
+    const h = (window as unknown as PreparationTestWindow).preparationTest;
+    h.push({ type: 'result', result: { status: 'cancelled', plan: null, quickReview: snapshot } }); h.finish();
+  }, snapshot);
+  await expect(page.getByRole('heading', { name: 'Quick Review — provisional results' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Load selected details', exact: true })).toBeEnabled();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(previewCalls(state.calls)).toEqual(before);
+});
+
+test('late detailed preview errors do not block or replace quick results', async ({ page }) => {
+  await fakeApi(page, null);
+  const held: Route[] = [];
+  await page.route('**/execution/status?*', (route) => { held.push(route); });
+  await page.route('**/execution/plan?*', (route) => { held.push(route); });
+  await page.route('**/analysis/duplicates?*', (route) => { held.push(route); });
+  await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect.poll(() => held.length).toBe(3);
+  await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).check();
+  await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Quick Review — provisional results' })).toBeVisible();
+  await Promise.all(held.map((route) => route.fulfill({ status: 404, contentType: 'text/html', body: 'Not Found' })));
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Quick Review — provisional results' })).toBeVisible();
+});
+
+test('quick progress parser accepts evaluation and partial snapshots but rejects malformed terminal data', async () => {
+  const snapshot = quickReviewFixture(1); snapshot.preparation.status = 'cancelled';
+  const progress = { preparationId: runId, stage: 'evaluating-rules', checkedGroups: 1, targetGroups: 2, eligibleGroups: 1, excludedGroups: 0 };
+  const text = JSON.stringify({ type: 'progress', progress }) + '\n' + JSON.stringify({ type: 'result', result: { status: 'cancelled', plan: null, quickReview: snapshot } }) + '\n';
+  const events: unknown[] = [];
+  const result = await consumeReviewPreparation(streamBody(text), (p) => events.push(p));
+  expect(result.type).toBe('result'); expect(events).toEqual([progress]);
+  await expect(consumeReviewPreparation(streamBody(JSON.stringify({ type: 'result', result: { status: 'completed', plan: null, quickReview: null } }) + '\n'), () => undefined)).rejects.toThrow();
+});
+
+test('switching quick mode on and off during a cached preview refresh never leaves Controls stuck busy', async ({ page }) => {
+  await fakeApi(page, null); await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
+  let held: Route | undefined;
+  await page.route('**/execution/status?*', (route) => { held = route; });
+  await page.getByRole('button', { name: 'Refresh previews', exact: true }).click();
+  await expect.poll(() => Boolean(held)).toBe(true);
+  await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).uncheck();
+  await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
+  await held!.fulfill({ status: 500, json: { error: 'Old preview failure' } });
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
 });

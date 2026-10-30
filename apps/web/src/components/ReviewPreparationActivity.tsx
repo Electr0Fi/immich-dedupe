@@ -3,6 +3,7 @@ import type { ReviewPreparationStage } from '@immich-dedupe/shared';
 import type { ExecutionState } from '../useExecution';
 
 const labels: Record<ReviewPreparationStage, string> = {
+  'evaluating-rules': 'Evaluating rules from duplicate-list data; extra details are skipped',
   'checking-history': 'Checking recovery history', 'checking-identity': 'Checking Immich account identity',
   'fetching-groups': 'Fetching duplicate groups', 'checking-membership': 'Checking duplicate group membership',
   'checking-assets': 'Checking fresh asset details and safety rules', 'checking-albums': 'Checking album memberships', finalizing: 'Finalizing review',
@@ -22,7 +23,7 @@ export function ReviewPreparationActivity({ execution }: { execution: ExecutionS
       <span>{execution.cancelling ? 'Cancelling review… Waiting for outstanding reads to finish.' : p ? labels[p.stage] : 'Starting review preparation…'}</span>
     </div>
     {execution.cancelling && p && <p>Last check: {labels[p.stage]}</p>}
-    {p && <p>{p.checkedGroups} {p.targetGroups === null ? 'groups checked' : `of ${p.targetGroups} groups checked`} · {p.eligibleGroups} eligible · {p.excludedGroups} excluded</p>}
+    {p && <p>{p.checkedGroups} {p.targetGroups === null ? 'groups checked' : `of ${p.targetGroups} groups checked`} · {p.eligibleGroups} {execution.quickReviewEnabled ? 'provisional candidates' : 'eligible'} · {p.excludedGroups} excluded</p>}
     {p?.targetGroups != null && p.targetGroups > 0 && <progress aria-label="Review groups checked" value={p.checkedGroups} max={p.targetGroups} />}
     <p>Elapsed {elapsed}s. No Immich assets will be changed.</p>
     {waiting && <p>Still waiting for Immich during this check. The last reported stage is shown above.</p>}

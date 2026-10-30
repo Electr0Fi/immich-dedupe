@@ -6,6 +6,8 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ### Available now
 
+- Optional **Quick Review** evaluates the duplicate-list response without per-image, album or thumbnail reads. Missing rule data remains unverified. Select provisional candidates and **Load selected details**, then dry-run and execute through the existing safety checks.
+
 - Review duplicate groups already identified by Immich. Excluded review groups explain unsupported asset counts, missing groups and inconsistent membership separately. Each prepared group starts with its details collapsed; expand groups individually or use Expand All and Collapse All. Selection checkboxes stay visible.
 - Compare keeper/loser thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute reviewed batches, and view or export batch logs as JSON or CSV. Select first N uses the review’s Execute Limit; Select All includes every eligible group in the prepared review and raises Execute Limit when needed, requiring a new dry-run. Review preparation shows live stages, checked/eligible/excluded counts and elapsed time. Cancel review stops early and retains fully checked groups as a usable partial review. Other pending requests show a spinner and status message.
 - Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.
@@ -76,6 +78,22 @@ The API defaults to port 3001. Open the Vite URL printed in the terminal, normal
 4. Click **Dry-run selected**. Changing the selection clears approval. Proposed album transfers have not been performed.
 5. Choose **Execute selected** after the dry-run passes. Confirm the selected group and album-addition counts. Execution rechecks current data and may stop if it changed.
 6. Inspect the outcome and batch logs. Investigate `needs-verification` results before retrying; no mutation is automatically retried.
+
+## Quick Review
+
+Under Prepare review in Dedupe, enable **Quick Review** to scan more groups without fetching full details for every image. It is off by default and remembered across screen navigation for this browser session. Changing mode or manually editing limits clears the current review and approval.
+
+Quick preparation makes one Immich duplicate-list request, takes the first Scan Limit groups, checks processed/quarantined exclusions and evaluates the existing rules using metadata already in that response. It skips additional group refetches, per-image requests, album reads and thumbnails. Counts come from the prepared result. Detailed Refresh previews and automatic detailed preview enrichment are disabled while this option is enabled. Reads already started before switching modes may finish; their late results are ignored.
+
+Groups enter **Provisional candidates** only if available metadata satisfies every automatic rule. Missing/invalid sizes, dimensions, safety flags, media type, source/name information, group association or Live Photo linkage are listed as unverified, without fallback requests or assumptions that unknown states are safe. Unsupported group sizes and other exclusions retain specific reasons. Quick Review may identify fewer candidates than a full review when the duplicate response omits required data. Scanning still uses the first N groups, without pagination; Immich's duplicate-list response itself may remain large.
+
+1. Select candidates with their checkboxes, Select first N or Select All. In quick results, Select All locally raises Execute Limit if necessary.
+2. Click **Load selected details**. The API verifies only this exact selection with fresh membership, image and album reads. Changed selections/metadata or new exclusions reject the entire upgrade, preserving quick results and explaining why. There are no replacement candidates or automatic retries.
+3. Inspect the resulting full review, including proposed album changes, and perform **Dry-run selected**. Live execution still requires that exact selection's successful journaled dry-run and fresh checks.
+
+Quick snapshots are scoped to the server/account, stored only in API memory for 15 minutes, with capacity 20 separately from full plans. They cannot be executed directly or used for image access. Successful detail loading creates a normal immutable full plan with its own 15-minute lifetime, containing exactly the selected groups and no inherited dry-run authorization. Keep/loser metadata and available checksums shown by the quick scan must still match; previously unfetched albums are treated as unknown until loaded. Reload/restart requires new preparation. Cancellation preserves completed quick results, which can still be selected for detail loading.
+
+API: `POST /execution/quick-reviews` accepts the same validated limits as full preparation and returns `{ ok, quickReview }`; with `Accept: application/x-ndjson` it streams progress and a terminal `{ status, plan: null, quickReview }` result. It shares the existing preparation cancellation endpoint. `POST /execution/quick-reviews/:reviewId/prepare-plan` accepts `{ selectedGroupIds, executeLimit }` and returns `{ ok, plan }`. Invalid selection is 400, busy/scope/stale-selection conflicts are 409, expired/missing quick snapshots are 410, and unavailable identity/storage/upstream reads are 503. Quick preparation and detail loading share the coordinator lock. Full review endpoints and journal versions are unchanged. If an updated frontend reports a missing quick endpoint, restart the current API checkout, reload and prepare again.
 
 ## Required Immich API key permissions
 

@@ -28,6 +28,7 @@ export function WelcomeScreen() {
         <h2 id="current-functionality-title">Current Functionality</h2>
         <h3>Available now</h3>
         <ul>
+          <li>Enable Quick Review for faster duplicate-list-only rule checks without per-image, album or thumbnail requests. Missing data remains unverified. Load selected details to build a full review before dry-run and execution.</li>
           <li>Prepared group details start collapsed. Expand individual groups or use Expand All and Collapse All; selection checkboxes stay visible and disclosure changes preserve dry-run approval.</li>
           <li>Review duplicate groups already identified by Immich. Excluded groups explain unsupported asset counts, missing groups and inconsistent membership separately.</li>
           <li>Compare image thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute the reviewed batch, and view or export logs. Select first N uses Execute Limit. Select All includes every eligible group checked in the review and raises the limit when needed; a new dry-run is required. Review preparation shows live stages, counts and elapsed time. Cancel review stops early and keeps fully checked results available for review, dry-run and execution. Other pending requests show a spinner and status message.</li>

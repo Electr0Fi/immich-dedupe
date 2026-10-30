@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { ExecutionRequestSchema, CreatePlanSchema, ReviewedRunSchema } from "./executionRequest";
+import { ExecutionRequestSchema, CreatePlanSchema, ReviewedRunSchema, PrepareQuickSelectionSchema } from "./executionRequest";
 import { AssetMediaSize } from "@immich/sdk";
 
 import { normalizeDuplicates } from "./normalizeDuplicates";
@@ -12,6 +12,7 @@ import type {
   DuplicateGroup,
   ExecutionPlanItem,
   ReviewPreparationEvent,
+  ReviewPreparationProgress,
 } from "@immich-dedupe/shared";
 import { createExecutionService, ExecutionServiceError } from "./executionService";
 import type { ExecutionJournal } from "./executionJournal";
@@ -187,6 +188,8 @@ export function createApp(dependencies: AppDependencies) {
         "/execution/log/export.json",
         "/execution/log/export.csv",
         "POST /execution/run { scanLimit, executeLimit, dryRun }",
+        "POST /execution/quick-reviews { scanLimit, executeLimit }",
+        "POST /execution/quick-reviews/:reviewId/prepare-plan { selectedGroupIds, executeLimit }",
       ],
     });
   });
@@ -594,7 +597,7 @@ export function createApp(dependencies: AppDependencies) {
     try { res.json({ ok: true, ...await execution.clearLog() }); }
     catch (error) { executionError(res, error); }
   });
-  app.post("/execution/plans", async (req, res) => {
+  for (const quick of [false, true]) app.post(quick ? "/execution/quick-reviews" : "/execution/plans", async (req, res) => {
     const parsed = CreatePlanSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid review limits" });
     if (req.get("Accept")?.includes("application/x-ndjson")) {
@@ -608,7 +611,8 @@ export function createApp(dependencies: AppDependencies) {
         if (event.type !== "progress" || !res.writableNeedDrain) res.write(`${JSON.stringify(event)}\n`);
       }
       try {
-        const result = await execution.preparePlanStream(parsed.data, (progress) => send({ type: "progress", progress }));
+        const observer = (progress: ReviewPreparationProgress) => send({ type: "progress", progress });
+        const result = await (quick ? execution.prepareQuickReview(parsed.data, observer) : execution.preparePlanStream(parsed.data, observer));
         send({ type: "result", result });
       } catch (error) {
         const known = error instanceof ExecutionServiceError;
@@ -621,7 +625,18 @@ export function createApp(dependencies: AppDependencies) {
       if (!res.destroyed) res.end();
       return;
     }
-    try { res.json(await execution.preparePlan(parsed.data)); } catch (error) { executionError(res, error); }
+    try {
+      if (quick) {
+        const result = await execution.prepareQuickReview(parsed.data);
+        res.set("Cache-Control", "no-store").json({ ok: true, quickReview: result.quickReview });
+      } else res.json(await execution.preparePlan(parsed.data));
+    } catch (error) { executionError(res, error); }
+  });
+  app.post("/execution/quick-reviews/:reviewId/prepare-plan", async (req, res) => {
+    const parsed = PrepareQuickSelectionSchema.safeParse(req.body);
+    if (!z.string().uuid().safeParse(req.params.reviewId).success || !parsed.success) return res.status(400).json({ ok: false, error: "Invalid quick selection" });
+    res.set("Cache-Control", "no-store");
+    try { res.json(await execution.prepareQuickSelection(req.params.reviewId, parsed.data)); } catch (error) { executionError(res, error); }
   });
   app.post("/execution/preparations/:preparationId/cancel", (req, res) => {
     res.set("Cache-Control", "no-store");

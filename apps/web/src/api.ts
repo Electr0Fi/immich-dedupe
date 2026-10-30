@@ -1,7 +1,7 @@
 import { ApiError, readResponse } from './apiResponse';
 export { ApiError } from './apiResponse';
-import { consumeReviewPreparation } from './reviewPreparationStream';
-import type { ReviewPreparationProgress, ReviewPreparationResult, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
+import { consumeReviewPreparation, validResult } from './reviewPreparationStream';
+import type { ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
 export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
@@ -274,6 +274,26 @@ export async function prepareReviewedPlan(scanLimit: number, executeLimit: numbe
   const terminal = await consumeReviewPreparation(response.body, onProgress);
   if (terminal.type === 'error') throw new ApiError(terminal.status, terminal.error, undefined, terminal.code);
   return terminal.result;
+}
+export async function prepareQuickReview(scanLimit: number, executeLimit: number, onProgress: (progress: ReviewPreparationProgress) => void): Promise<ReviewPreparationResult> {
+  const path = '/execution/quick-reviews';
+  let response: Response;
+  try { response = await fetch(`${API_BASE_URL}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ scanLimit, executeLimit }) }); }
+  catch { throw new Error('Cannot reach the Dedupe API. Check that the API is running and accessible from this browser, then try again'); }
+  if (!response.ok || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
+    const value = await readResponse<QuickReviewResponse>(response, { method: 'POST', path });
+    const result = { status: 'completed' as const, plan: null, quickReview: value.quickReview };
+    if (!validResult(result)) throw new Error('Invalid Quick Review response');
+    return result;
+  }
+  if (!response.body) throw new Error('Quick Review response was incomplete');
+  const terminal = await consumeReviewPreparation(response.body, onProgress);
+  if (terminal.type === 'error') throw new ApiError(terminal.status, terminal.error, undefined, terminal.code);
+  if (!('quickReview' in terminal.result)) throw new Error('Invalid Quick Review response');
+  return terminal.result;
+}
+export function prepareQuickSelection(reviewId: string, selectedGroupIds: string[], executeLimit: number) {
+  return apiPost<ReviewedPlanResponse>(`/execution/quick-reviews/${encodeURIComponent(reviewId)}/prepare-plan`, { selectedGroupIds, executeLimit });
 }
 export function cancelReviewedPreparation(preparationId: string) {
   return apiPost<{ ok: true; status: 'finished' | 'cancelling' }>(`/execution/preparations/${encodeURIComponent(preparationId)}/cancel`, {});

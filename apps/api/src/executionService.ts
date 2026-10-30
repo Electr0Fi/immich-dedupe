@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { DuplicateGroup, DuplicateDecision, ExecutionResult, ExecutionScope, ExecutionExclusion, RecoveryAttempt, RunView, RunViewResponse, RunReport, ReviewedRunEvidence, ReviewedCandidate, ReviewedPlanExclusion, ChangedPlanGroup, ReviewPreparationProgress, ReviewPreparationStage, ReviewPreparationResult } from "@immich-dedupe/shared";
+import type { DuplicateGroup, DuplicateDecision, ExecutionResult, ExecutionScope, ExecutionExclusion, RecoveryAttempt, RunView, RunViewResponse, RunReport, ReviewedRunEvidence, ReviewedCandidate, ReviewedPlanExclusion, ChangedPlanGroup, ReviewPreparationProgress, ReviewPreparationStage, ReviewPreparationResult, QuickReviewCandidate, QuickReviewExclusion } from "@immich-dedupe/shared";
 import { createDecisionExecutor, CheckpointFailure } from "./executeDecision";
 import { isExecutableDecision } from "./executePlan";
 import { JournalError, isUnresolved, sameScope, type ExecutionJournal } from "./executionJournal";
@@ -8,6 +8,8 @@ import { reconcileAttempt } from "./reconcileAttempt";
 import type { ImmichClient } from "./immichClient";
 import type { ExecutionLog } from "./executionLog";
 import { createReviewedPlanStore, reviewedCandidate, reviewedCandidateSchema, candidateToGroup, changedCandidate } from "./reviewedPlan";
+import { createQuickReviewStore, quickGroupListSchema, evaluateQuickGroup, changedQuickCandidate } from "./quickReview";
+import { PrepareQuickSelectionSchema } from "./executionRequest";
 import { readFreshPreflight, groupListSchema, PreflightSafetyError } from "./freshPreflight";
 
 export class ExecutionServiceError extends Error {
@@ -28,6 +30,7 @@ export function createExecutionService(deps: {
   const { client, journal, log } = deps;
   const now = deps.now ?? Date.now;
   const plans = createReviewedPlanStore(now);
+  const quickReviews = createQuickReviewStore(now);
   const preparations = new Map<string, { cancelled: boolean; finished: boolean; updatedAt: number }>();
   let activeRunId: string | null = null;
   let lastScope: ExecutionScope | null = null;
@@ -232,14 +235,15 @@ export function createExecutionService(deps: {
     }
     return changedGroups;
   }
-  async function prepareReview(options: { scanLimit: number; executeLimit: number }, onProgress?: (progress: ReviewPreparationProgress) => void): Promise<ReviewPreparationResult> {
+  async function prepareReview(options: { scanLimit: number; executeLimit: number }, onProgress?: (progress: ReviewPreparationProgress) => void, quick = false): Promise<ReviewPreparationResult> {
     const preparationId = randomUUID();
     const state = { cancelled: false, finished: false, updatedAt: now() };
     let checkedGroups = 0, targetGroups: number | null = null;
     const candidates: ReviewedCandidate[] = [], excludedGroups: ReviewedPlanExclusion[] = [];
+    const quickCandidates: QuickReviewCandidate[] = [], quickExcluded: QuickReviewExclusion[] = [];
     function progress(stage: ReviewPreparationStage) {
       // Reporting is observational: a disconnected/failed consumer cannot stop the coordinator.
-      try { onProgress?.({ preparationId, stage, checkedGroups, targetGroups, eligibleGroups: candidates.length, excludedGroups: excludedGroups.length }); } catch { /* Ignore observer failures. */ }
+      try { onProgress?.({ preparationId, stage, checkedGroups, targetGroups, eligibleGroups: quick ? quickCandidates.length : candidates.length, excludedGroups: quick ? quickExcluded.length : excludedGroups.length }); } catch { /* Ignore observer failures. */ }
     }
     function checkCancelled() { if (state.cancelled) throw new PreparationCancelled(); }
     return exclusive(async (_, scope) => {
@@ -249,7 +253,16 @@ export function createExecutionService(deps: {
       try {
         checkCancelled();
         progress("fetching-groups");
-        const groups = groupListSchema.parse(await client.getAssetDuplicates({}));
+        let raw: unknown;
+        try { raw = await client.getAssetDuplicates({}); }
+        catch (error) {
+          if (quick) throw new ExecutionServiceError(503, "preflight_unavailable", "Immich duplicate groups could not be loaded for Quick Review");
+          throw error;
+        }
+        const quickParsed = quick ? quickGroupListSchema.safeParse(raw) : null;
+        if (quickParsed && !quickParsed.success) throw new ExecutionServiceError(503, "preflight_unavailable", "Immich returned invalid duplicate group data; no Quick Review was prepared");
+        const quickGroups = quickParsed?.success ? quickParsed.data : null;
+        const groups = quickGroups ?? groupListSchema.parse(raw);
         if (new Set(groups.map((g) => g.duplicateId)).size !== groups.length) throw new ExecutionServiceError(503, "preflight_unavailable", "Duplicate group information is inconsistent");
         const selected = groups.slice(0, options.scanLimit);
         totalGroups = groups.length; targetGroups = selected.length;
@@ -257,8 +270,20 @@ export function createExecutionService(deps: {
         const index = journal.exclusionIndex(scope);
         for (const group of selected) {
           checkCancelled();
-          progress("checking-membership");
+          if (!quick) progress("checking-membership");
           const excluded = exclusions(index, { groupId: group.duplicateId, assets: group.assets });
+          if (quickGroups) {
+            if (excluded) quickExcluded.push({ ...excluded, message: `Excluded: ${excluded.reason}` });
+            else {
+              const result = evaluateQuickGroup(quickGroups[checkedGroups]);
+              if ('keepAsset' in result) quickCandidates.push(result); else quickExcluded.push(result);
+            }
+            checkedGroups++;
+            progress("evaluating-rules");
+            // Yield to HTTP cancellation requests without adding per-group network reads.
+            if (checkedGroups % 25 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+            continue;
+          }
           if (excluded) excludedGroups.push({ ...excluded, message: `Excluded: ${excluded.reason}` });
           else {
             try {
@@ -280,6 +305,11 @@ export function createExecutionService(deps: {
       } catch (error) { if (!(error instanceof PreparationCancelled)) throw error; }
       const status = state.cancelled ? "cancelled" as const : "completed" as const;
       progress("finalizing");
+      if (quick) {
+        const quickReview = targetGroups === null ? null : quickReviews.put({ scope, ...options, fetchedGroups: checkedGroups, totalGroups,
+          candidates: quickCandidates, excludedGroups: quickExcluded, preparation: { status, checkedGroups, targetGroups } });
+        return { status, plan: null, quickReview };
+      }
       const plan = targetGroups === null ? null : plans.put({ scope, ...options, fetchedGroups: checkedGroups, totalGroups, candidates, excludedGroups,
         preparation: { status, checkedGroups, targetGroups } });
       return { status, plan };
@@ -302,6 +332,40 @@ export function createExecutionService(deps: {
       return { ok: true as const, plan: result.plan! };
     },
     preparePlanStream: prepareReview,
+    prepareQuickReview(options: { scanLimit: number; executeLimit: number }, onProgress?: (progress: ReviewPreparationProgress) => void) {
+      return prepareReview(options, onProgress, true);
+    },
+    prepareQuickSelection(reviewId: string, request: unknown) {
+      return exclusive(async (_, scope) => {
+        const parsed = PrepareQuickSelectionSchema.safeParse(request);
+        if (!parsed.success) throw new ExecutionServiceError(400, "invalid_selection", "Select unique provisional candidates within a positive Execute Limit");
+        const snapshot = quickReviews.get(reviewId);
+        if (!snapshot) throw new ExecutionServiceError(410, "quick_review_unavailable", "Quick Review expired or is unavailable; prepare a new review");
+        if (!sameScope(snapshot.scope, scope)) throw new ExecutionServiceError(409, "plan_scope_changed", "The Immich connection changed; prepare a new review");
+        const { selectedGroupIds, executeLimit } = parsed.data;
+        const selected = snapshot.candidates.filter((candidate) => selectedGroupIds.includes(candidate.groupId));
+        if (selected.length !== selectedGroupIds.length || selected.length > executeLimit) throw new ExecutionServiceError(400, "invalid_selection", "Select only provisional candidates within Execute Limit");
+        const index = journal.exclusionIndex(scope), candidates: ReviewedCandidate[] = [], changedGroups: ChangedPlanGroup[] = [];
+        for (const expected of selected) {
+          const excluded = exclusions(index, { groupId: expected.groupId, assets: [expected.keepAsset, expected.trashAsset] });
+          if (excluded) { changedGroups.push({ groupId: expected.groupId, reasons: [excluded.reason] }); continue; }
+          try {
+            // Use preparation read batching so failures also await all started reads before unlocking.
+            const fresh = await readFreshPreflight(client, expected.groupId, { keepId: expected.keepAsset.id, trashId: expected.trashAsset.id }, { checkCancelled() {}, stage() {} });
+            const candidate = reviewedCandidate(fresh);
+            reviewedCandidateSchema.parse(candidate);
+            const reasons = changedQuickCandidate(expected, candidate);
+            if (reasons.length) changedGroups.push({ groupId: expected.groupId, reasons }); else candidates.push(candidate);
+          } catch (error) {
+            if (error instanceof PreflightSafetyError || error instanceof z.ZodError) changedGroups.push({ groupId: expected.groupId, reasons: [error instanceof PreflightSafetyError ? error.message : "Invalid fresh group or album data"] });
+            else throw new ExecutionServiceError(503, "preflight_unavailable", "Selected group details could not be verified; Quick Review results were preserved");
+          }
+        }
+        if (changedGroups.length) throw new ExecutionServiceError(409, "plan_changed", "Selected quick results changed; prepare a new review", { changedGroups });
+        return { ok: true as const, plan: plans.put({ scope, scanLimit: snapshot.scanLimit, executeLimit, fetchedGroups: candidates.length,
+          totalGroups: snapshot.totalGroups, candidates, excludedGroups: [] }) };
+      });
+    },
     selectAllReviewed(planId: string) {
       return exclusive(async (_, scope) => {
         const entry = plans.get(planId);

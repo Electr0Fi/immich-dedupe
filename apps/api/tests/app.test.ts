@@ -445,3 +445,44 @@ test('prepared review HTTP response explains unsupported asset counts to the UI'
   assert.equal(plan.excludedGroups[0].message, '3 assets in group; current rule definitions only support exactly 2 assets per group.');
   assert.deepEqual(h.mutations, []);
 });
+
+test('quick HTTP endpoints return provisional data, enrich only an explicit selection and reject direct execution', async (t) => {
+  const h = executionHarness('one'); h.raw.assets.forEach((asset) => { asset.livePhotoVideoId = null; }); const base = await serve(t, dependencies(t, { immich: h.client }));
+  const post = (url: string, body: unknown = {}) => fetch(`${base}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  for (const body of [{ scanLimit: 0 }, { executeLimit: '5' }, { unexpected: true }]) assert.equal((await post('/execution/quick-reviews', body)).status, 400);
+  const response = await post('/execution/quick-reviews', { scanLimit: 10, executeLimit: 1 });
+  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+  const { quickReview } = await response.json();
+  assert.equal(quickReview.candidates.length, 1); assert.deepEqual(h.calls, ['groups']);
+  assert.equal('albums' in quickReview.candidates[0].keepAsset, false);
+  assert.equal((await post(`/execution/plans/${quickReview.reviewId}/run`, { selectedGroupIds: ['one'], dryRun: false })).status, 410);
+  assert.equal((await fetch(`${base}/execution/plans/${quickReview.reviewId}/assets/one-keep/thumbnail`)).status, 410);
+  const endpoint = `/execution/quick-reviews/${quickReview.reviewId}/prepare-plan`;
+  for (const body of [{ selectedGroupIds: [], executeLimit: 1 }, { selectedGroupIds: ['one'], executeLimit: 0 }, { selectedGroupIds: ['one'], executeLimit: 1, dryRun: false }]) assert.equal((await post(endpoint, body)).status, 400);
+  const detailed = await post(endpoint, { selectedGroupIds: ['one'], executeLimit: 1 }); assert.equal(detailed.status, 200);
+  const { plan } = await detailed.json(); assert.deepEqual(plan.candidates[0].proposedAlbumIds, ['missing']);
+  assert.equal((await post(`/execution/plans/${plan.planId}/run`, { selectedGroupIds: ['one'], dryRun: false })).status, 409);
+  assert.deepEqual(h.mutations, []);
+});
+
+test('quick streaming cancellation preserves a normal partial result while holding the coordinator lock', async (t) => {
+  const h = executionHarness('one'); let release!: () => void, entered!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let reads = 0;
+  h.client.getAssetDuplicates = async () => { reads++; entered(); await wait; return [structuredClone(h.raw)]; };
+  const base = await serve(t, dependencies(t, { immich: h.client }));
+  const response = await fetch(`${base}/execution/quick-reviews`, { method: 'POST', headers: { Accept: 'application/x-ndjson' } });
+  const reader = response.body!.getReader(), decoder = new TextDecoder();
+  let text = decoder.decode((await reader.read()).value);
+  const event = JSON.parse(text.split('\n')[0]); await started;
+  const cancel = await fetch(`${base}/execution/preparations/${event.progress.preparationId}/cancel`, { method: 'POST' });
+  assert.equal(cancel.status, 200);
+  assert.equal((await fetch(`${base}/execution/plans`, { method: 'POST' })).status, 409);
+  release();
+  for (;;) { const { value, done } = await reader.read(); if (done) break; text += decoder.decode(value); }
+  const terminal = JSON.parse(text.trim().split('\n').at(-1)!);
+  assert.equal(terminal.type, 'result'); assert.equal(terminal.result.status, 'cancelled');
+  assert.equal(terminal.result.plan, null); assert.equal(terminal.result.quickReview.fetchedGroups, 0);
+  assert.equal(reads, 1); assert.deepEqual(h.mutations, []);
+});

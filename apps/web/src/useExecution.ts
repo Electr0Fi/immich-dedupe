@@ -1,6 +1,6 @@
-import type { ReviewPreparationProgress } from '@immich-dedupe/shared';
+import type { ReviewPreparationProgress, QuickReview } from '@immich-dedupe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, getLatestRun, getRun, prepareReviewedPlan, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
+import { ApiError, getLatestRun, getRun, prepareReviewedPlan, prepareQuickReview, prepareQuickSelection, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
 
 type Request = { phase: 'pending' | 'unknown' | 'failed'; dryRun: boolean; message: string; runId?: string; partial?: boolean } | null;
 function responseView(result: ExecutionRunResponse, startedAt: string): RunView {
@@ -21,6 +21,9 @@ function responseView(result: ExecutionRunResponse, startedAt: string): RunView 
 /** Owned by the shell so navigation cannot lose an in-flight request or its result. */
 export function useExecution(open: boolean) {
   const [review, setReview] = useState<ReviewedPlan | null>(null);
+  const [quickSnapshot, setQuickSnapshot] = useState<QuickReview | null>(null);
+  const [quickReviewEnabled, setQuickReviewEnabled] = useState(false);
+  const [loadingDetails, setLoadingDetails] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [limits, setLimits] = useState({ scanLimit: 100, executeLimit: 5 });
   const [preparing, setPreparing] = useState(false);
@@ -50,7 +53,7 @@ export function useExecution(open: boolean) {
   const applyLatest = useCallback((value: RunViewResponse, current: number) => {
     if (!mounted.current || version.current !== current) return;
     const key = JSON.stringify(value.scope);
-    if (scope.current && scope.current !== key) { setPartialRun(null); setRequest(null); setReview(null); setAuthorization(null); setSelected([]); }
+    if (scope.current && scope.current !== key) { setPartialRun(null); setRequest(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
     scope.current = key;
     setRun(value.run); setReadError(null);
     setPartialRun((partial) => partial && partial.runId === value.run?.runId ? {
@@ -66,7 +69,7 @@ export function useExecution(open: boolean) {
   const readFailure = useCallback((error: unknown, current: number) => {
     if (!mounted.current || version.current !== current) return;
     setReadError(error instanceof Error ? error.message : 'Latest run could not be loaded');
-    if (error instanceof ApiError && error.code === 'identity_unavailable') { setRun(null); setPartialRun(null); setReview(null); setAuthorization(null); setSelected([]); }
+    if (error instanceof ApiError && error.code === 'identity_unavailable') { setRun(null); setPartialRun(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
   }, []);
   const refreshLatest = useCallback(async () => {
     if (pending.current) return;
@@ -85,22 +88,59 @@ export function useExecution(open: boolean) {
   }, [open, applyLatest, readFailure]);
 
   useEffect(() => {
-    if (!review) return;
-    const timer = window.setTimeout(() => { setExpired(true); setAuthorization(null); }, Math.max(0, Date.parse(review.expiresAt) - Date.now()));
+    const snapshot = review ?? quickSnapshot;
+    if (!snapshot) return;
+    const timer = window.setTimeout(() => { setExpired(true); setAuthorization(null); }, Math.max(0, Date.parse(snapshot.expiresAt) - Date.now()));
     return () => window.clearTimeout(timer);
-  }, [review]);
+  }, [review, quickSnapshot]);
 
+  function changeQuickReview(enabled: boolean) {
+    if (pending.current) return;
+    setQuickReviewEnabled(enabled); setQuickSnapshot(null); setReview(null); setAuthorization(null); setSelected([]);
+    setReviewError(null); setSelectionMessage(null); setPreparationMessage(null); setInvalid(false); setExpired(false);
+  }
+  async function loadSelectedDetails() {
+    if (pending.current || !quickSnapshot || invalid || expired || selected.length === 0) return;
+    if (Date.parse(quickSnapshot.expiresAt) <= Date.now()) { setExpired(true); return; }
+    pending.current = true;
+    const current = ++version.current;
+    setLoadingDetails(true); setReading(false); setAuthorization(null); setReviewError(null);
+    try {
+      const { plan } = await prepareQuickSelection(quickSnapshot.reviewId, selected, limits.executeLimit);
+      if (!mounted.current || version.current !== current) return;
+      setReview(plan); setQuickSnapshot(null); setSelected(plan.candidates.map((candidate) => candidate.groupId));
+      setLimits({ scanLimit: plan.scanLimit, executeLimit: plan.executeLimit });
+      setInvalid(false); setExpired(Date.parse(plan.expiresAt) <= Date.now());
+      setSelectionMessage(`Detailed review prepared for ${plan.candidates.length} selected Quick Review groups. Inspect album actions and complete a dry-run before execution.`);
+    } catch (error) {
+      if (!mounted.current || version.current !== current) return;
+      setReviewError(error instanceof Error ? error.message : 'Selected details could not be loaded');
+      if (error instanceof ApiError && ['quick_review_unavailable', 'plan_scope_changed', 'identity_unavailable'].includes(error.code ?? '')) setInvalid(true);
+    } finally {
+      pending.current = false;
+      if (mounted.current && version.current === current) setLoadingDetails(false);
+    }
+  }
   function changeLimits(next: typeof limits) {
     if (pending.current) return;
-    setLimits(next); setReview(null); setAuthorization(null); setSelected([]); setReviewError(null); setPreparationMessage(null); setSelectionMessage(null);
+    setLimits(next); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); setReviewError(null); setPreparationMessage(null); setSelectionMessage(null);
   }
   function selectGroups(ids: string[]) {
-    if (pending.current || !review) return;
-    if (ids.length > review.executeLimit) return;
-    const ordered = review.candidates.filter((c) => ids.includes(c.groupId)).map((c) => c.groupId);
+    const snapshot = review ?? quickSnapshot;
+    if (pending.current || !snapshot) return;
+    if (ids.length > (review?.executeLimit ?? limits.executeLimit)) return;
+    const ordered = snapshot.candidates.filter((c) => ids.includes(c.groupId)).map((c) => c.groupId);
     setSelected(ordered); setAuthorization(null); setSelectionMessage(null);
   }
   async function selectAll() {
+    if (!pending.current && quickSnapshot && !invalid && !expired) {
+      if (Date.parse(quickSnapshot.expiresAt) <= Date.now()) { setExpired(true); return; }
+      const ids = quickSnapshot.candidates.map((candidate) => candidate.groupId);
+      setLimits({ ...limits, executeLimit: Math.max(limits.executeLimit, ids.length) });
+      setSelected(ids); setAuthorization(null);
+      setSelectionMessage(`Selected all ${ids.length} provisional candidates. Execute Limit is ${Math.max(limits.executeLimit, ids.length)}. Load selected details before dry-run or execution.`);
+      return;
+    }
     if (pending.current || !review || invalid || expired || review.candidates.length === 0) return;
     if (Date.parse(review.expiresAt) <= Date.now()) { setExpired(true); setAuthorization(null); return; }
     const ids = review.candidates.map((candidate) => candidate.groupId);
@@ -148,9 +188,9 @@ export function useExecution(open: boolean) {
     preparation.current = session;
     setCancelling(false); setPreparationProgress(null); setPreparationMessage(null); setSelectionMessage(null);
     setPreparationStartedAt(Date.now()); setProgressUpdatedAt(Date.now());
-    setPreparing(true); setReview(null); setSelected([]); setAuthorization(null); setReviewError(null); setReading(false);
+    setPreparing(true); setReview(null); setQuickSnapshot(null); setSelected([]); setAuthorization(null); setReviewError(null); setReading(false);
     try {
-      const value = await prepareReviewedPlan(limits.scanLimit, limits.executeLimit, (progress) => {
+      const value = await (quickReviewEnabled ? prepareQuickReview : prepareReviewedPlan)(limits.scanLimit, limits.executeLimit, (progress) => {
         if (!mounted.current || version.current !== current) return;
         session.id = progress.preparationId;
         setPreparationProgress(progress); setProgressUpdatedAt(Date.now());
@@ -158,18 +198,20 @@ export function useExecution(open: boolean) {
       });
       if (!mounted.current || version.current !== current) return;
       setReviewError(null);
+      const snapshot = value.quickReview ?? value.plan;
       if (value.status === 'cancelled') {
-        setPreparationMessage(value.plan
-          ? `Review cancelled. ${value.plan.fetchedGroups} of ${value.plan.preparation?.targetGroups ?? value.plan.fetchedGroups} groups checked; completed results are available below.`
+        setPreparationMessage(snapshot
+          ? `Review cancelled. ${snapshot.fetchedGroups} of ${snapshot.preparation?.targetGroups ?? snapshot.fetchedGroups} groups checked; completed results are available below.`
           : 'Review cancelled before any groups were checked.');
       } else if (session.requested) setPreparationMessage('The review finished before cancellation took effect. All completed results are available below.');
-      if (!value.plan) return value.status;
-      const key = JSON.stringify(value.plan.scope);
+      if (!snapshot) return value.status;
+      const key = JSON.stringify(snapshot.scope);
       if (scope.current && key !== scope.current) { setRun(null); setPartialRun(null); setRequest(null); }
       scope.current = key;
-      setLimits({ scanLimit: value.plan.scanLimit, executeLimit: value.plan.executeLimit });
-      setReview(value.plan); setSelected(value.plan.candidates.slice(0, value.plan.executeLimit).map((c) => c.groupId));
-      setInvalid(false); setExpired(Date.parse(value.plan.expiresAt) <= Date.now());
+      setLimits({ scanLimit: snapshot.scanLimit, executeLimit: snapshot.executeLimit });
+      if ('reviewId' in snapshot) setQuickSnapshot(snapshot); else setReview(snapshot);
+      setSelected(snapshot.candidates.slice(0, snapshot.executeLimit).map((c) => c.groupId));
+      setInvalid(false); setExpired(Date.parse(snapshot.expiresAt) <= Date.now());
       return value.status;
     } catch (error) {
       if (mounted.current && version.current === current) setReviewError(error instanceof Error ? error.message : 'Review could not be prepared');
@@ -214,7 +256,7 @@ export function useExecution(open: boolean) {
         runId: error instanceof ApiError ? error.runId : undefined, partial: error instanceof ApiError && Boolean(error.partialExecution) });
     } finally { pending.current = false; }
   }
-  return { review, selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
+  return { review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
     prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
     run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }

@@ -30,7 +30,7 @@ export function candidateToGroup(candidate: Pick<ReviewedCandidate, "groupId" | 
     deviceId: null, deviceAssetId: null, libraryId: null,
   })) };
 }
-function projectAsset(asset: AssetRecord): ReviewedAsset {
+export function projectAsset(asset: AssetRecord): ReviewedAsset {
   return { id: asset.id, duplicateId: asset.duplicateId, fileName: asset.fileName, originalPath: asset.originalPath,
     checksum: asset.checksum, assetType: asset.assetType, width: asset.width, height: asset.height, fileSize: asset.fileSize,
     isEdited: asset.isEdited, isTrashed: asset.isTrashed, isFavorite: asset.isFavorite, isArchived: asset.isArchived, isOffline: asset.isOffline,

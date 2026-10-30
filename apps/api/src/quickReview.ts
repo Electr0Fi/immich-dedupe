@@ -1,0 +1,84 @@
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import type { QuickReview, QuickReviewCandidate, QuickReviewExclusion, ReviewedCandidate } from '@immich-dedupe/shared';
+import { evaluateDuplicateGroup } from '@immich-dedupe/rule-engine';
+import { normalizeDuplicates } from './normalizeDuplicates';
+import { PLAN_CAPACITY, PLAN_TTL_MS, projectAsset, reviewedAssetSchema } from './reviewedPlan';
+
+const text = z.string().nullable().optional().catch(null);
+const number = z.number().nullable().optional().catch(null);
+const flag = z.boolean().nullable().optional().catch(null);
+// Keep only fields needed by the existing rules and later snapshot comparison.
+export const quickGroupListSchema = z.array(z.object({
+  duplicateId: z.string().min(1),
+  assets: z.array(z.object({
+    id: z.string().min(1), duplicateId: text, originalFileName: text, originalPath: text,
+    checksum: text, type: text, width: number, height: number,
+    isEdited: flag, isTrashed: flag, isFavorite: flag, isArchived: flag, isOffline: flag,
+    livePhotoVideoId: z.string().nullable().optional().catch(undefined),
+    exifInfo: z.object({
+      fileSizeInByte: z.union([z.number(), z.string()]).nullish().catch(null),
+      exifImageWidth: number, exifImageHeight: number,
+    }).nullish().catch(null),
+  })),
+}));
+const quickAssetSchema = reviewedAssetSchema.omit({ albums: true }).strip();
+export function quickCandidate(candidate: ReviewedCandidate): QuickReviewCandidate {
+  return { groupId: candidate.groupId, keepAsset: quickAssetSchema.parse(candidate.keepAsset),
+    trashAsset: quickAssetSchema.parse(candidate.trashAsset), decision: candidate.decision };
+}
+export function evaluateQuickGroup(raw: z.infer<typeof quickGroupListSchema>[number]): QuickReviewCandidate | QuickReviewExclusion {
+  const exclude = (message: string, reason: 'ineligible' | 'unverified' = 'ineligible'): QuickReviewExclusion => ({ groupId: raw.duplicateId, reason, message, attemptIds: [] });
+  if (raw.assets.length !== 2) return exclude(`${raw.assets.length} ${raw.assets.length === 1 ? 'asset' : 'assets'} in group; current rule definitions only support exactly 2 assets per group.`);
+  if (new Set(raw.assets.map((asset) => asset.id)).size !== 2) return exclude('The group contains repeated asset IDs; 2 distinct assets are required.');
+  const group = normalizeDuplicates([raw]).groups[0];
+  const missing = new Set<string>();
+  for (const [index, asset] of group.assets.entries()) {
+    const original = raw.assets[index];
+    const size = original.exifInfo?.fileSizeInByte;
+    const parsed = typeof size === 'number' || (typeof size === 'string' && size.trim()) ? Number(size) : NaN;
+    asset.fileSize = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    if (original.duplicateId == null) missing.add('asset group association');
+    else if (original.duplicateId !== raw.duplicateId) return exclude('An asset belongs to a different duplicate group; its membership could not be verified.');
+    if (!asset.fileName.trim()) missing.add('filename');
+    if (!asset.originalPath) missing.add('source path');
+    if (!(asset.width != null && asset.width > 0 && asset.height != null && asset.height > 0)) missing.add('dimensions');
+    if (asset.fileSize === null) missing.add('file size');
+    if ([asset.isEdited, asset.isTrashed, asset.isFavorite, asset.isArchived, asset.isOffline].some((value) => value === null)) missing.add('safety flags');
+    if (original.type == null) missing.add('media type');
+    if (original.livePhotoVideoId === undefined) missing.add('Live Photo linkage');
+  }
+  if (missing.size) return exclude(`Not verified in Quick Review: missing or invalid ${[...missing].join(', ')} in the duplicate response. Extra metadata reads were skipped.`, 'unverified');
+  const decision = evaluateDuplicateGroup(group);
+  if (decision.status !== 'auto-resolve' || decision.confidence !== 100 || !decision.keepAssetId || decision.trashAssetIds.length !== 1) return exclude(decision.reasons.join('; '));
+  const keep = group.assets.find((asset) => asset.id === decision.keepAssetId)!;
+  const trash = group.assets.find((asset) => asset.id === decision.trashAssetIds[0])!;
+  return { groupId: group.groupId, keepAsset: quickAssetSchema.parse(projectAsset(keep)), trashAsset: quickAssetSchema.parse(projectAsset(trash)), decision };
+}
+export function changedQuickCandidate(expected: QuickReviewCandidate, fresh: ReviewedCandidate): string[] {
+  const actual = quickCandidate(fresh);
+  const reasons: string[] = [];
+  for (const side of ['keepAsset', 'trashAsset'] as const) {
+    const before = expected[side], after = { ...actual[side] };
+    // A checksum absent from the duplicate response was never claimed as reviewed.
+    if (before.checksum === null) after.checksum = null;
+    if (JSON.stringify(before) !== JSON.stringify(after)) reasons.push(`${side === 'keepAsset' ? 'Keeper' : 'Loser'} metadata or selection changed since Quick Review`);
+  }
+  if (JSON.stringify(expected.decision) !== JSON.stringify(actual.decision)) reasons.push('Rule decision changed since Quick Review');
+  return reasons;
+}
+export function createQuickReviewStore(now: () => number) {
+  const reviews = new Map<string, QuickReview>();
+  function purge() { for (const [id, review] of reviews) if (Date.parse(review.expiresAt) <= now()) reviews.delete(id); }
+  return {
+    put(input: Omit<QuickReview, 'reviewId' | 'createdAt' | 'expiresAt'>) {
+      purge();
+      while (reviews.size >= PLAN_CAPACITY) reviews.delete(reviews.keys().next().value!);
+      const created = now();
+      const review: QuickReview = { ...structuredClone(input), reviewId: randomUUID(), createdAt: new Date(created).toISOString(), expiresAt: new Date(created + PLAN_TTL_MS).toISOString() };
+      reviews.set(review.reviewId, review);
+      return structuredClone(review);
+    },
+    get(id: string) { purge(); return reviews.get(id); },
+  };
+}

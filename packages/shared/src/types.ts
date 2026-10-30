@@ -163,12 +163,25 @@ export type ReviewedPlan = {
   candidates: ReviewedCandidate[]; excludedGroups: ReviewedPlanExclusion[];
   preparation?: { status: "completed" | "cancelled"; checkedGroups: number; targetGroups: number };
 };
-export type ReviewPreparationStage = "checking-history" | "checking-identity" | "fetching-groups" | "checking-membership" | "checking-assets" | "checking-albums" | "finalizing";
+/** Provisional duplicate-list data; album memberships have not been fetched. */
+export type QuickReviewCandidate = Omit<ReviewedCandidate, "keepAsset" | "trashAsset" | "requiredAlbumIds" | "proposedAlbumIds" | "skippedAlbumIds"> & {
+  keepAsset: Omit<ReviewedAsset, "albums">; trashAsset: Omit<ReviewedAsset, "albums">;
+};
+export type QuickReviewExclusion = Omit<ReviewedPlanExclusion, "reason"> & { reason: ReviewedPlanExclusion["reason"] | "unverified" };
+export type QuickReview = {
+  reviewId: string; scope: ExecutionScope; createdAt: string; expiresAt: string;
+  scanLimit: number; executeLimit: number; fetchedGroups: number; totalGroups: number;
+  candidates: QuickReviewCandidate[]; excludedGroups: QuickReviewExclusion[];
+  preparation: { status: "completed" | "cancelled"; checkedGroups: number; targetGroups: number };
+};
+export type QuickReviewResponse = { ok: true; quickReview: QuickReview | null };
+export type PrepareQuickSelectionRequest = { selectedGroupIds: string[]; executeLimit: number };
+export type ReviewPreparationStage = "checking-history" | "checking-identity" | "fetching-groups" | "checking-membership" | "checking-assets" | "checking-albums" | "evaluating-rules" | "finalizing";
 export type ReviewPreparationProgress = {
   preparationId: string; stage: ReviewPreparationStage;
   checkedGroups: number; targetGroups: number | null; eligibleGroups: number; excludedGroups: number;
 };
-export type ReviewPreparationResult = { status: "completed" | "cancelled"; plan: ReviewedPlan | null };
+export type ReviewPreparationResult = { status: "completed" | "cancelled"; plan: ReviewedPlan | null; quickReview?: QuickReview | null };
 export type ReviewPreparationEvent =
   | { type: "progress"; progress: ReviewPreparationProgress }
   | { type: "result"; result: ReviewPreparationResult }

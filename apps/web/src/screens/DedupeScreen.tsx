@@ -1,3 +1,4 @@
+import { QuickReviewBatch } from '../components/QuickReviewBatch';
 import { ReviewPreparationActivity } from '../components/ReviewPreparationActivity';
 import { ReviewedBatch } from '../components/ReviewedBatch';
 import { ExecutionResults } from '../components/ExecutionResults';
@@ -31,12 +32,14 @@ type Props = {
 
 export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery }: Props) {
   const { scanLimit, executeLimit } = execution.limits;
+  const quickMode = execution.quickReviewEnabled;
 
   const [status, setStatus] = useState<ExecutionStatusResponse | null>(getDedupeCache()?.status ?? null);
   const [analysis, setAnalysis] = useState<DuplicateAnalysisResponse | null>(getDedupeCache()?.analysis ?? null);
 
   const [statusLoading, setStatusLoading] = useState(!getDedupeCache());
   const [error, setError] = useState<string | null>(null);
+  const previewLoading = statusLoading && !quickMode;
 
   const requestVersion = useRef(0);
   const mounted = useRef(false);
@@ -47,6 +50,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
   }, []);
 
   async function refresh() {
+    if (quickMode) return;
     const version = ++requestVersion.current;
     const generation = getDedupeCacheGeneration();
     setStatusLoading(true);
@@ -63,9 +67,15 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
     }
   }
 
+  function handleQuickModeChange(enabled: boolean) {
+    // A previous full-preview request may finish later; it must not leave Controls busy.
+    setStatusLoading(!enabled && !getDedupeCache());
+    execution.changeQuickReview(enabled);
+  }
+
   async function handlePrepare() {
     const outcome = await execution.prepare();
-    if (mounted.current && outcome === 'completed') await refresh();
+    if (mounted.current && outcome === 'completed' && !quickMode) await refresh();
   }
   async function handleRun(dryRun: boolean) {
     const additions = execution.review?.candidates.filter((c) => execution.selected.includes(c.groupId)).reduce((n, c) => n + c.proposedAlbumIds.length, 0) ?? 0;
@@ -73,14 +83,14 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
       `Execute exactly ${execution.selected.length} reviewed groups with ${additions} proposed album additions? Fresh checks may stop the batch; no replacement groups will be selected.`
     )) return;
     await execution.execute({ dryRun });
-    if (mounted.current) await refresh();
+    if (mounted.current && !quickMode) await refresh();
   }
 
   useEffect(() => {
     mounted.current = true;
     const version = ++requestVersion.current;
     const generation = getDedupeCacheGeneration();
-    if (!getDedupeCache()) {
+    if (!quickMode && !getDedupeCache()) {
       fetchSnapshot(INITIAL_SCAN_LIMIT)
         .then((snapshot) => {
           if (mounted.current && version === requestVersion.current) applySnapshot(snapshot, generation);
@@ -97,17 +107,18 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
     return () => {
       mounted.current = false;
     };
-  }, [applySnapshot]);
+  }, [applySnapshot, quickMode]);
 
   const manualReviewItems =
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
 
-  const buttonsDisabled = execution.busy || execution.preparing || execution.selectingAll || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
-  const activityMessage = execution.selectingAll ? 'Selecting all eligible reviewed groups… Updating Execute Limit.' : execution.busy
+  const preparedSnapshot = execution.quickSnapshot ?? execution.review;
+  const buttonsDisabled = execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails || execution.reading || previewLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
+  const activityMessage = execution.loadingDetails ? 'Loading full details and album actions for selected Quick Review groups…' : execution.selectingAll ? 'Selecting all eligible reviewed groups… Updating Execute Limit.' : execution.busy
     ? execution.request?.dryRun
       ? 'Dry run in progress… No Immich assets will be changed.'
       : 'Execution in progress… Waiting for verified results.'
-    : statusLoading
+    : previewLoading
       ? 'Refreshing duplicate previews…'
       : execution.reading
         ? 'Loading latest saved run…'
@@ -130,7 +141,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
               type="number"
               min={1}
               value={scanLimit}
-              disabled={execution.busy || execution.preparing || execution.selectingAll} onChange={(e) => execution.changeLimits({ scanLimit: Number(e.target.value), executeLimit })}
+              disabled={execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails} onChange={(e) => execution.changeLimits({ scanLimit: Number(e.target.value), executeLimit })}
             />
           </label>
 
@@ -140,13 +151,13 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
               type="number"
               min={1}
               value={executeLimit}
-              disabled={execution.busy || execution.preparing || execution.selectingAll} onChange={(e) => execution.changeLimits({ scanLimit, executeLimit: Number(e.target.value) })}
+              disabled={execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails} onChange={(e) => execution.changeLimits({ scanLimit, executeLimit: Number(e.target.value) })}
             />
           </label>
         </div>
 
         <div className="buttonRow">
-          <button disabled={buttonsDisabled} onClick={refresh}>
+          <button disabled={buttonsDisabled || quickMode} onClick={refresh}>
             Refresh previews
           </button>
           <button disabled={execution.preparing ? execution.cancelling : buttonsDisabled} onClick={execution.preparing ? execution.cancelPreparation : handlePrepare}>
@@ -160,18 +171,27 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
           </button>
         </div>
 
+        <label className="toggle-row">
+          <input type="checkbox" aria-label="Quick Review" checked={quickMode} disabled={execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails}
+            onChange={(event) => handleQuickModeChange(event.target.checked)} />
+          <span><span className="toggle-label">Quick Review</span><span className="toggle-hint">Use duplicate-list data only for a faster scan. Missing information remains unverified. Load selected details before dry-run or execution.</span></span>
+        </label>
+        {quickMode && <p className="field-hint">Detailed preview refreshes are disabled in Quick Review. Switch it off to use Refresh previews. Any reads already started may finish.</p>}
         {execution.preparing && <ReviewPreparationActivity execution={execution} />}
         {execution.preparationMessage && <p role="status">{execution.preparationMessage}</p>}
         <div className="dedupe-activity status-refreshing" role="status" aria-live="polite" aria-atomic="true">
           {activityMessage && <><span className="spinner" aria-hidden="true" /><span>{activityMessage}</span></>}
         </div>
 
-        {error && <p className="error" role="alert">Preview refresh failed: {error}. Use Refresh previews to try again. Execution results below are preserved.</p>}
+        {!quickMode && error && <p className="error" role="alert">Preview refresh failed: {error}. Use Refresh previews to try again. Execution results below are preserved.</p>}
       </section>
 
       <section className="card">
         <h2>Status</h2>
-        {statusLoading ? (
+        {quickMode ? (
+          preparedSnapshot ? <p>{preparedSnapshot.fetchedGroups} groups checked · {preparedSnapshot.candidates.length} candidates · {preparedSnapshot.excludedGroups.length} excluded or unverified. Counts come from the prepared result.</p>
+            : <p>Prepare a Quick Review to see counts without detailed preview enrichment.</p>
+        ) : statusLoading ? (
           <div className="status-refreshing">
             <span className="spinner" />
             Refreshing
@@ -200,13 +220,13 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         )}
       </section>
 
-      <ReviewedBatch execution={execution} />
+      {execution.quickSnapshot ? <QuickReviewBatch execution={execution} /> : <ReviewedBatch execution={execution} />}
 
       <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
 
       <section className="card">
         <h2>Manual Review</h2>
-        {statusLoading ? (
+        {quickMode ? <p>{execution.quickSnapshot ? "Excluded and unverified groups are shown in the prepared Quick Review above." : execution.review ? "The detailed review above contains only your selected groups. Prepare another Quick Review to scan again." : "Prepare a Quick Review to see excluded and unverified groups."}</p> : statusLoading ? (
           <div className="status-refreshing">
             <span className="spinner" />
             Refreshing

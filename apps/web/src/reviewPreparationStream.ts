@@ -1,13 +1,26 @@
 import type { ReviewPreparationEvent, ReviewPreparationProgress, ReviewPreparationResult } from '@immich-dedupe/shared';
 
-const stages = new Set(['checking-history', 'checking-identity', 'fetching-groups', 'checking-membership', 'checking-assets', 'checking-albums', 'finalizing']);
+const stages = new Set(['checking-history', 'checking-identity', 'fetching-groups', 'checking-membership', 'checking-assets', 'checking-albums', 'evaluating-rules', 'finalizing']);
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function count(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
-function validResult(value: unknown): value is ReviewPreparationResult {
+export function validResult(value: unknown): value is ReviewPreparationResult {
   if (!record(value) || !['completed', 'cancelled'].includes(String(value.status))) return false;
-  if (value.plan === null) return value.status === 'cancelled';
-  const plan = value.plan;
-  return record(plan) && typeof plan.planId === 'string' && record(plan.scope) && typeof plan.scope.apiUrl === 'string' && typeof plan.scope.accountId === 'string'
+  const quick = 'quickReview' in value;
+  if (quick && value.plan !== null) return false;
+  const plan = quick ? value.quickReview : value.plan;
+  if (plan === null) return value.status === 'cancelled';
+  if (quick) {
+    if (!record(plan) || !Array.isArray(plan.candidates) || !Array.isArray(plan.excludedGroups) || !record(plan.preparation)
+      || plan.preparation.status !== value.status || !count(plan.preparation.checkedGroups) || !count(plan.preparation.targetGroups)
+      || plan.preparation.checkedGroups !== plan.fetchedGroups || plan.preparation.targetGroups < plan.preparation.checkedGroups
+      || plan.candidates.length + plan.excludedGroups.length !== plan.fetchedGroups) return false;
+    if (!plan.candidates.every((candidate: unknown) => record(candidate) && typeof candidate.groupId === 'string'
+      && record(candidate.keepAsset) && typeof candidate.keepAsset.id === 'string' && typeof candidate.keepAsset.fileName === 'string'
+      && record(candidate.trashAsset) && typeof candidate.trashAsset.id === 'string' && typeof candidate.trashAsset.fileName === 'string'
+      && record(candidate.decision) && Array.isArray(candidate.decision.reasons) && candidate.decision.reasons.every((reason: unknown) => typeof reason === 'string'))) return false;
+    if (!plan.excludedGroups.every((group: unknown) => record(group) && typeof group.groupId === 'string' && typeof group.reason === 'string' && typeof group.message === 'string')) return false;
+  }
+  return record(plan) && typeof (quick ? plan.reviewId : plan.planId) === 'string' && record(plan.scope) && typeof plan.scope.apiUrl === 'string' && typeof plan.scope.accountId === 'string'
     && typeof plan.expiresAt === 'string' && Number.isFinite(Date.parse(plan.expiresAt)) && count(plan.fetchedGroups) && count(plan.totalGroups)
     && count(plan.executeLimit) && plan.executeLimit > 0 && Array.isArray(plan.candidates) && Array.isArray(plan.excludedGroups);
 }

@@ -18,7 +18,7 @@ function AssetComparison({ asset, planId, keeper }: { asset: ReviewedAsset; plan
     <details><summary>Asset ID and path</summary><p className="run-identifier">{asset.id}</p><p className="run-identifier">{asset.originalPath}</p></details>
   </section>;
 }
-function ReviewGroup({ groupId, title, expanded, onToggle, selection, children }: {
+export function ReviewGroup({ groupId, title, expanded, onToggle, selection, children }: {
   groupId: string; title: string; expanded: boolean; onToggle: () => void; selection?: ReactNode; children: ReactNode;
 }) {
   const detailsId = useId();
@@ -43,7 +43,7 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
     if (!review) return;
     setExpansion({ planId: review.planId, groupIds: expandedIds.includes(groupId) ? expandedIds.filter((id) => id !== groupId) : [...expandedIds, groupId] });
   }
-  const disabled = execution.busy || execution.preparing || execution.selectingAll || !execution.validReview;
+  const disabled = execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails || !execution.validReview;
   const selectedCandidates = review?.candidates.filter((c) => selected.includes(c.groupId)) ?? [];
   return <section className="card" aria-labelledby="review-title">
     <h2 id="review-title">Review exactly what will run</h2>

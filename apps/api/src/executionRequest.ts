@@ -6,6 +6,10 @@ export const ReviewedRunSchema = z.object({
   selectedGroupIds: z.array(z.string().min(1)).nonempty().refine((ids) => new Set(ids).size === ids.length),
   dryRun: z.boolean().default(true),
 }).strict();
+export const PrepareQuickSelectionSchema = z.object({
+  selectedGroupIds: z.array(z.string().min(1)).nonempty().refine((ids) => new Set(ids).size === ids.length),
+  executeLimit: limit,
+}).strict();
 export const ExecutionRequestSchema = z.object({
   dryRun: z.boolean().default(true),
   scanLimit: limit.optional(),
