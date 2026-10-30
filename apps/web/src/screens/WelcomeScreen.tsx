@@ -37,6 +37,7 @@ export function WelcomeScreen() {
         </ul>
         <h3>Automatic cleanup requirements</h3>
         <ul>
+          <li>The Immich API key needs user.read for account identity checks, including dry-runs and recovery actions, alongside permissions for the requested library operations.</li>
           <li>Exactly two images: keep the larger external-library image over an internal copy with matching filenames and dimensions.</li>
           <li>Favorites, archived/offline assets, edited/trashed assets, linked Live Photo images, videos, and assets with incomplete safety information are excluded.</li>
         </ul>

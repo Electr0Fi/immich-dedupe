@@ -30,7 +30,19 @@ export function createExecutionService(deps: {
       const user = z.object({ id: z.string().min(1) }).parse(await client.getMyUser());
       lastScope = { apiUrl: normalizeApiUrl(deps.apiUrl), accountId: user.id };
       return lastScope;
-    } catch { throw new ExecutionServiceError(503, "identity_unavailable", "Cannot verify the Immich connection identity; no execution or recovery changes were performed"); }
+    } catch (error) {
+      // Only expose known diagnostics, never raw SDK errors containing connection details.
+      const response = z.object({ status: z.number(), data: z.object({ message: z.string() }).optional() }).safeParse(error);
+      let reason = "Check that Immich is reachable and the configured API key permits the current-user lookup (user.read).";
+      if (response.success && response.data.status === 403) {
+        reason = response.data.data?.message === "Missing required permission: user.read"
+          ? "Immich denied the current-user lookup: the API key is missing user.read. Enable user.read for the configured key in Immich."
+          : "Immich denied the current-user lookup (HTTP 403). Check the configured API key's user.read permission and server access rules.";
+      } else if (response.success && response.data.status === 401) {
+        reason = "Immich rejected the configured credentials (HTTP 401). Check the API key and restart the API after changing it.";
+      }
+      throw new ExecutionServiceError(503, "identity_unavailable", `Cannot verify the Immich connection identity. ${reason} No execution or recovery changes were performed.`);
+    }
   }
   async function exclusive<T>(action: (runId: string, scope: ExecutionScope) => Promise<T>): Promise<T> {
     if (activeRunId) throw new ExecutionServiceError(409, "execution_busy", "Another execution or recovery action is running", { activeRunId });

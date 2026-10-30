@@ -195,6 +195,32 @@ test('identity failure prevents processing or migration; credentials are not wri
   assert.ok(!content.includes('password') && !content.includes('secret') && !content.includes('name:'));
 });
 
+for (const diagnostic of [
+  { error: { status: 403, data: { message: 'Missing required permission: user.read' } }, expected: 'Enable user.read' },
+  { error: { status: 403, data: { message: 'secret-api-key' } }, expected: 'HTTP 403' },
+  { error: { status: 401 }, expected: 'HTTP 401' },
+  { error: new Error('secret-api-key'), expected: 'Check that Immich is reachable' },
+]) {
+  test(`identity lookup gives safe actionable guidance: ${diagnostic.expected}`, async (t) => {
+    const h = setup(t);
+    h.client.getMyUser = async () => { throw diagnostic.error; };
+    let loaded = false;
+    const execution = h.service();
+    await assert.rejects(execution.run({ ...options, dryRun: true }, async () => { loaded = true; return h.load(); }), (error: unknown) => {
+      assert.ok(error instanceof ExecutionServiceError);
+      assert.equal(error.status, 503); assert.equal(error.code, 'identity_unavailable');
+      assert.ok(error.message.includes(diagnostic.expected));
+      assert.ok(!error.message.includes('secret-api-key'));
+      return true;
+    });
+    assert.equal(loaded, false); assert.equal(fs.existsSync(h.journalDir), false);
+    assert.deepEqual(h.mutations, []);
+    // A corrected permission can be used without leaving the coordinator locked.
+    h.client.getMyUser = async () => ({ id: 'test-user' });
+    assert.equal((await execution.run({ ...options, dryRun: true }, h.load)).results[0].outcome, 'dry-run');
+  });
+}
+
 test('quarantine persists through clearing and regrouping, while unrelated groups remain usable', async (t) => {
   const h = setup(t); h.client.resolveDuplicates = async () => { throw new Error('Lost response'); };
   const execution = h.service(); const first = await execution.run(options, h.load);

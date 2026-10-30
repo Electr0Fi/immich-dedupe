@@ -90,6 +90,8 @@ The API uses `tsx watch src/index.ts`, on port 3001 unless overridden. Vite uses
 
 Connection Settings can test supplied credentials and write them to `apps/api/.env`. The parsed `env` object and SDK configuration are initialized once, so restart the API after saving. The watcher is not explicitly configured to restart for `.env` changes. The header checks server status only when the shell mounts, so reload the browser to refresh it.
 
+The configured Immich key must permit `GET /users/me` (`user.read`) in addition to permissions for the requested library operations. Execution (including dry-runs), recovery changes, and log clearing fail closed with HTTP 503 if account identity cannot be verified. A successful connection test does not establish this permission. Identity errors distinguish missing `user.read`, denied access, and rejected credentials without exposing raw SDK errors. Enable the permission on the key in Immich, or replace the configured key and restart the API. Do not bypass the lookup or change recovery evidence to resolve a permissions error.
+
 ## Data flow
 
 ```text

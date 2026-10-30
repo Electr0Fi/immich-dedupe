@@ -17,6 +17,7 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ### Automatic cleanup requirements
 
+- The Immich API key needs `user.read` for account identity checks, including dry-runs and recovery actions, in addition to permissions for the requested library operations.
 - Exactly two images: keep the larger external-library image over an internal copy with matching filenames and dimensions.
 - Favorites, archived/offline assets, edited/trashed assets, linked Live Photo images, videos, and assets with incomplete safety information are excluded.
 - Source classification uses configured-in-code path prefixes. Unknown paths cannot qualify. See `apps/api/src/classifySource.ts` for the current prefixes.
@@ -49,7 +50,7 @@ IMMICH_URL=http://localhost:2283/api
 IMMICH_API_KEY=replace-with-your-key
 ```
 
-The backend requires valid initial credentials to start. The API key must also permit the current-user identity lookup used to scope execution evidence to the server URL and account. Include `/api` in the Immich API base URL where appropriate, without a trailing slash. Keep credentials out of Git.
+The backend requires valid initial credentials to start. The API key must permit `GET /users/me` (`user.read`) to scope execution evidence to the server URL and account. A missing permission causes HTTP 503 before execution, including dry-runs. Enable `user.read` on the configured key in Immich; if replacing the key in `apps/api/.env`, restart the API. A successful connection test alone does not verify this permission. Include `/api` in the Immich API base URL where appropriate, without a trailing slash. Keep credentials out of Git.
 
 Optionally set the Dedupe backend URL in `apps/web/.env`:
 
