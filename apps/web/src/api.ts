@@ -1,36 +1,11 @@
+import { ApiError, readResponse } from './apiResponse';
+export { ApiError } from './apiResponse';
 import { consumeReviewPreparation } from './reviewPreparationStream';
 import type { ReviewPreparationProgress, ReviewPreparationResult, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
 export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
-
-export class ApiError extends Error {
-  status: number;
-  partialExecution?: ExecutionRunResponse;
-  code?: string;
-  runId?: string;
-  constructor(status: number, message: string, partialExecution?: ExecutionRunResponse, code?: string, runId?: string) {
-    super(`HTTP ${status}: ${message}`);
-    this.name = 'ApiError';
-    this.status = status;
-    this.partialExecution = partialExecution;
-    this.code = code;
-    this.runId = runId;
-  }
-}
-
-async function readResponse<T>(response: Response): Promise<T> {
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    const partial = data?.partialExecution;
-    throw new ApiError(response.status, (typeof data?.error === 'string' ? data.error : response.statusText) + (Array.isArray(data?.changedGroups) ? data.changedGroups.map((g: { groupId: string; reasons: string[] }) => ` Group ${g.groupId}: ${Array.isArray(g.reasons) ? g.reasons.join('; ') : 'changed'}`).join('') : ''),
-      partial && Array.isArray(partial.results) && typeof partial.runId === 'string' ? partial : undefined,
-      typeof data?.code === 'string' ? data.code : undefined, typeof data?.runId === 'string' ? data.runId : undefined);
-  }
-  if (data === null) throw new Error('The API returned an invalid JSON response');
-  return data;
-}
 
 async function apiGet<T>(path: string): Promise<T> {
   let response: Response;
@@ -39,13 +14,13 @@ async function apiGet<T>(path: string): Promise<T> {
   } catch {
     throw new Error('Cannot reach the Dedupe API. Check that the API is running and accessible from this browser, then try again');
   }
-  return readResponse<T>(response);
+  return readResponse<T>(response, { method: 'GET', path });
 }
 
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return readResponse<T>(await fetch(`${API_BASE_URL}${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  }));
+  }), { method: 'POST', path });
 }
 
 export type ExecutionStatusResponse = {
@@ -292,7 +267,7 @@ export async function prepareReviewedPlan(scanLimit: number, executeLimit: numbe
     });
   } catch { throw new Error('Cannot reach the Dedupe API. Check that the API is running and accessible from this browser, then try again'); }
   if (!response.ok || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
-    const value = await readResponse<ReviewedPlanResponse>(response);
+    const value = await readResponse<ReviewedPlanResponse>(response, { method: 'POST', path: '/execution/plans' });
     return { status: 'completed', plan: value.plan };
   }
   if (!response.body) throw new Error('Review preparation response was incomplete');

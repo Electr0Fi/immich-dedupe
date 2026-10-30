@@ -29,14 +29,14 @@ export function WelcomeScreen() {
         <h3>Available now</h3>
         <ul>
           <li>Prepared group details start collapsed. Expand individual groups or use Expand All and Collapse All; selection checkboxes stay visible and disclosure changes preserve dry-run approval.</li>
-          <li>Review duplicate groups already identified by Immich.</li>
+          <li>Review duplicate groups already identified by Immich. Excluded groups explain unsupported asset counts, missing groups and inconsistent membership separately.</li>
           <li>Compare image thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute the reviewed batch, and view or export logs. Select first N uses Execute Limit. Select All includes every eligible group checked in the review and raises the limit when needed; a new dry-run is required. Review preparation shows live stages, counts and elapsed time. Cancel review stops early and keeps fully checked results available for review, dry-run and execution. Other pending requests show a spinner and status message.</li>
           <li>Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.</li>
           <li>Single-group and batch execution share safety checks, logging, and run/attempt IDs. Overlapping execution or recovery actions are rejected within one API process.</li>
           <li>Unfinished and uncertain attempts stay quarantined across restarts. In Logs, recheck outcomes and explicitly allow a new attempt only when the pair is still intact and eligible; neither action runs cleanup.</li>
           <li>Clearing display logs preserves recovery evidence, processed groups, and legacy exclusions.</li>
           <li>Dedupe explains verified, simulated, failed, and uncertain outcomes with hover/focus definitions, expandable details, and links to recovery. The latest saved run for the current account is restored when Dedupe opens; refresh to see newer evidence.</li>
-          <li>Refresh previews independently of the reviewed selection and execution results. Connection failures include API access guidance and can be retried with Refresh previews.</li>
+          <li>Refresh previews independently of the reviewed selection and execution results. Connection failures include API access guidance and can be retried with Refresh previews. Missing API routes identify the failing endpoint and explain restart and routing checks.</li>
         </ul>
         <h3>Automatic cleanup requirements</h3>
         <ul>

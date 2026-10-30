@@ -365,3 +365,33 @@ test('select all preserves partial-review metadata and never lowers an existing 
   assert.equal(plan.expiresAt, result.plan.expiresAt); assert.deepEqual(plan.candidates, result.plan.candidates);
   assert.deepEqual(h.mutations, []);
 });
+
+for (const count of [0, 1, 3, 4]) test(`review exclusions explain the unsupported ${count}-asset group without claiming membership changed`, async (t) => {
+  const h = setup(t);
+  h.raw.assets = Array.from({ length: count }, (_, index) => ({ ...h.raw.assets[0], id: `asset-${index}` }));
+  const plan = await h.prepare();
+  assert.equal(plan.candidates.length, 0); assert.equal(plan.excludedGroups.length, 1);
+  const excluded = plan.excludedGroups[0];
+  assert.equal(excluded.reason, 'ineligible');
+  assert.equal(excluded.message, `${count} ${count === 1 ? 'asset' : 'assets'} in group; current rule definitions only support exactly 2 assets per group.`);
+  assert.equal(h.calls.some((call) => call.startsWith('asset:') || call.startsWith('albums:')), false);
+  assert.deepEqual(h.mutations, []);
+});
+
+for (const kind of ['missing-group', 'repeated-group', 'repeated-asset'] as const) test(`review exclusions distinguish ${kind} from an unsupported group size`, async (t) => {
+  const h = setup(t); const original = structuredClone(h.raw);
+  let reads = 0;
+  h.client.getAssetDuplicates = async () => {
+    if (++reads === 1) return [original];
+    if (kind === 'missing-group') return [];
+    if (kind === 'repeated-group') return [original, structuredClone(original)];
+    return [{ ...original, assets: [original.assets[0], original.assets[0]] }];
+  };
+  const plan = await h.prepare();
+  const message = plan.excludedGroups[0].message;
+  if (kind === 'missing-group') assert.match(message, /Immich no longer returns this duplicate group/);
+  if (kind === 'repeated-group') assert.match(message, /Immich returned 2 entries for this duplicate group/);
+  if (kind === 'repeated-asset') assert.match(message, /repeated asset IDs.*2 distinct assets/);
+  assert.equal(plan.candidates.length, 0); assert.equal(plan.excludedGroups[0].reason, 'ineligible');
+  assert.deepEqual(h.mutations, []);
+});

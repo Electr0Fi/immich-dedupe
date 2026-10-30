@@ -49,7 +49,12 @@ test('successful execution transfers, confirms all albums, resolves once, and ve
 });
 
 test('changed group membership prevents all mutation', async () => {
-  for (const change of ['missing', 'third', 'duplicate', 'replacement']) {
+  for (const [change, reason] of [
+    ['missing', /Immich no longer returns this duplicate group/],
+    ['third', /3 assets in group; current rule definitions only support exactly 2 assets per group/],
+    ['duplicate', /repeated asset IDs/],
+    ['replacement', /selected keeper or asset to trash is no longer in this duplicate group/],
+  ] as const) {
     const h = setup();
     if (change === 'missing') h.client.getAssetDuplicates = async () => [];
     if (change === 'third') h.raw.assets.push({ ...h.raw.assets[0], id: 'third' });
@@ -57,6 +62,8 @@ test('changed group membership prevents all mutation', async () => {
     if (change === 'replacement') h.raw.assets[1] = { ...h.raw.assets[1], id: 'replacement' };
     const result = await h.execute(input, decision, false);
     assert.equal(result.outcome, 'failed', change); assert.deepEqual(h.mutations, []);
+    assert.match(result.message, reason);
+    assert.equal(h.calls.some((call) => call.startsWith('asset:') || call.startsWith('albums:')), false);
   }
 });
 

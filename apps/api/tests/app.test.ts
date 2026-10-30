@@ -433,3 +433,15 @@ test('select-all endpoint validates requests and returns an expanded review requ
   assert.equal(plan.expiresAt, original.expiresAt); assert.deepEqual(plan.candidates, original.candidates);
   assert.equal((await post(`/execution/plans/${plan.planId}/run`, { selectedGroupIds: plan.candidates.map((c: { groupId: string }) => c.groupId), dryRun: false })).status, 409);
 });
+
+test('prepared review HTTP response explains unsupported asset counts to the UI', async (t) => {
+  const h = executionHarness('three-assets');
+  h.raw.assets.push({ ...h.raw.assets[0], id: 'third-asset' });
+  const base = await serve(t, dependencies(t, { immich: h.client }));
+  const response = await fetch(`${base}/execution/plans`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(response.status, 200);
+  const { plan } = await response.json();
+  assert.equal(plan.candidates.length, 0);
+  assert.equal(plan.excludedGroups[0].message, '3 assets in group; current rule definitions only support exactly 2 assets per group.');
+  assert.deepEqual(h.mutations, []);
+});

@@ -741,3 +741,22 @@ test('empty reviews disable bulk disclosure controls and small screens retain gr
   await expect(page.getByRole('button', { name: 'Collapse All', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test('missing Select All route gives restart guidance and preserves the existing review', async ({ page }) => {
+  await fakeApi(page, null); await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  const plan = reviewWithCandidates(1, 3);
+  await page.route('**/execution/plans', (route) => route.fulfill({ json: { ok: true, plan } }));
+  let calls = 0;
+  await page.route(`**/execution/plans/${runId}/select-all`, (route) => {
+    calls++;
+    return route.fulfill({ status: 404, contentType: 'text/html', body: '<html>Cannot POST select-all</html>' });
+  });
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await page.getByRole('button', { name: 'Select All', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Restart the API from the current project checkout');
+  await expect(page.getByRole('alert')).toContainText('/select-all');
+  await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(1);
+  await expect(page.getByLabel('Execute Limit', { exact: true })).toHaveValue('1');
+  await expect(page.getByRole('button', { name: 'Select All', exact: true })).toBeEnabled();
+  expect(calls).toBe(1);
+});

@@ -40,11 +40,23 @@ export async function readFreshPreflight(client: PreflightClient, groupId: strin
   const memberships = groupListSchema.parse(await client.getAssetDuplicates({}));
   preparation?.checkCancelled();
   const matches = memberships.filter((item) => item.duplicateId === groupId);
-  if (matches.length !== 1 || matches[0].assets.length !== 2 || new Set(matches[0].assets.map((asset) => asset.id)).size !== 2 ||
-      (selection && ![selection.keepId, selection.trashId].every((id) => matches[0].assets.some((a) => a.id === id)))) {
-    throw new PreflightSafetyError("Safety guard failed: duplicate group membership changed");
+  if (matches.length === 0) {
+    throw new PreflightSafetyError("Immich no longer returns this duplicate group. It may have been resolved or regrouped; prepare a new review.");
   }
-  const ids = selection ? [selection.keepId, selection.trashId] : matches[0].assets.map((a) => a.id);
+  if (matches.length > 1) {
+    throw new PreflightSafetyError(`Immich returned ${matches.length} entries for this duplicate group; its membership could not be verified.`);
+  }
+  const assets = matches[0].assets;
+  if (assets.length !== 2) {
+    throw new PreflightSafetyError(`${assets.length} ${assets.length === 1 ? "asset" : "assets"} in group; current rule definitions only support exactly 2 assets per group.`);
+  }
+  if (new Set(assets.map((asset) => asset.id)).size !== 2) {
+    throw new PreflightSafetyError("The group contains repeated asset IDs; current rule definitions require 2 distinct assets per group.");
+  }
+  if (selection && ![selection.keepId, selection.trashId].every((id) => assets.some((asset) => asset.id === id))) {
+    throw new PreflightSafetyError("The selected keeper or asset to trash is no longer in this duplicate group. Prepare a new review.");
+  }
+  const ids = selection ? [selection.keepId, selection.trashId] : assets.map((asset) => asset.id);
   preparation?.stage("checking-assets");
   const freshAssets = await reads(ids.map(async (id) => {
     const parsed = assetSchema.safeParse(await client.getAssetInfo({ id }));
