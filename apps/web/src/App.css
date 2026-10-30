@@ -511,6 +511,15 @@ input[type='checkbox'] {
   font-weight: 600;
 }
 
+.dedupe-activity {
+  justify-content: center;
+  margin-top: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}
+
 /* ─── Responsive ─────────────────────────────────── */
 
 @media (max-width: 900px) {

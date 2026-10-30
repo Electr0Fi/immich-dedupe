@@ -239,6 +239,8 @@ Shared `RunView`/`RunViewResponse` contracts expose timestamps, request/report m
 
 Dedupe summarizes verified completed, simulated, failed, needs verification and awaiting-result attempts, plus processed/legacy/quarantined exclusions. Technical IDs, proposed/confirmed albums and failure stages are expandable. Review recovery opens the exact attempt independently of list pagination, focuses the evidence, supports already-closed attempts and offers Back to results. Subsequent assessments do not rewrite historical outcomes.
 
+Dedupe controls show a spinner and accessible status message while dry-run/live requests are pending, with a matching label on the active button. Preview refresh and latest-run loading have separate activity messages. The indicator reflects a pending request, not streamed per-group progress; it clears on completion or error and respects reduced-motion preferences.
+
 The shell retains pending requests/results through navigation. Latest is scoped to the server account, includes other-tab requests and is restored when Dedupe opens after reload; Welcome stays the default page. Refresh latest performs a read with no automatic polling, retries or cleanup. Stale responses cannot replace a newer request. Pending work, rejected requests, lost responses (unknown, possibly still running), and preview-refresh errors are separate. Returned partial-response evidence is retained separately from journal reads during the browser session: unsaved facts cannot be restored after reload. A changed verified scope clears old partial evidence.
 
 ## Current Functionality and remaining limitations

@@ -7,7 +7,7 @@ A local React/Express application for reviewing duplicate groups already identif
 ### Available now
 
 - Review duplicate groups already identified by Immich.
-- Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs as JSON or CSV.
+- Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs as JSON or CSV. Dedupe shows a spinner and status message while requests are in progress.
 - Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.
 - Recheck group membership, asset details, file sizes, and album memberships before execution rather than relying on the preview cache.
 - Single-group and batch execution share safety checks, logging, run/attempt IDs, and processed/quarantine exclusions. Overlapping execution, recovery, or log-clearing requests return HTTP 409 within one API process.

@@ -103,12 +103,17 @@ test('an in-flight request and its response survive navigation', async ({ page }
   let held!: Route;
   await page.route('**/execution/run', async (route) => { held = route; entered(); const fulfill = await waiting; await fulfill(route); });
   await page.getByRole('button', { name: 'Dry run', exact: true }).click(); await started;
+  await expect(page.getByRole('button', { name: 'Running dry run…', exact: true })).toBeDisabled();
+  await expect(page.getByRole('status').filter({ hasText: 'Dry run in progress… No Immich assets will be changed.' })).toBeVisible();
+  await expect(page.locator('.dedupe-activity .spinner')).toBeVisible();
   await page.getByRole('button', { name: 'Logs', exact: true }).click();
   await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
   await expect(page.getByText('Dry-run request in progress…')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Execute', exact: true })).toBeDisabled();
   state.latest = runView(); await finish(held);
   await expect(summary(page)).toContainText('Safety checks passed; changes simulated.');
+  await expect(page.getByRole('button', { name: 'Dry run', exact: true })).toBeEnabled();
+  await expect(page.locator('.dedupe-activity .spinner')).toHaveCount(0);
 });
 
 for (const status of [409, 503]) {

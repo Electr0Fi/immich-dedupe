@@ -100,6 +100,15 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
 
   const buttonsDisabled = execution.busy || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
+  const activityMessage = execution.busy
+    ? execution.request?.dryRun
+      ? 'Dry run in progress… No Immich assets will be changed.'
+      : 'Execution in progress… Waiting for verified results.'
+    : statusLoading
+      ? 'Refreshing duplicate previews…'
+      : execution.reading
+        ? 'Loading latest saved run…'
+        : null;
 
   return (
     <div>
@@ -138,11 +147,15 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
             Refresh
           </button>
           <button disabled={buttonsDisabled} onClick={() => handleRun(true)}>
-            Dry run
+            {execution.busy && execution.request?.dryRun ? 'Running dry run…' : 'Dry run'}
           </button>
           <button disabled={buttonsDisabled} className="danger" onClick={() => handleRun(false)}>
-            Execute
+            {execution.busy && execution.request?.dryRun === false ? 'Executing…' : 'Execute'}
           </button>
+        </div>
+
+        <div className="dedupe-activity status-refreshing" role="status" aria-live="polite" aria-atomic="true">
+          {activityMessage && <><span className="spinner" aria-hidden="true" /><span>{activityMessage}</span></>}
         </div>
 
         {error && <p className="error" role="alert">Preview refresh failed: {error}. Execution results below are preserved.</p>}

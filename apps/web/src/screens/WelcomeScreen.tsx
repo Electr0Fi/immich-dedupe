@@ -29,7 +29,7 @@ export function WelcomeScreen() {
         <h3>Available now</h3>
         <ul>
           <li>Review duplicate groups already identified by Immich.</li>
-          <li>Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs.</li>
+          <li>Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs. A spinner and status message show when a request is in progress.</li>
           <li>Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.</li>
           <li>Single-group and batch execution share safety checks, logging, and run/attempt IDs. Overlapping execution or recovery actions are rejected within one API process.</li>
           <li>Unfinished and uncertain attempts stay quarantined across restarts. In Logs, recheck outcomes and explicitly allow a new attempt only when the pair is still intact and eligible; neither action runs cleanup.</li>
