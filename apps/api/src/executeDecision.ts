@@ -1,11 +1,11 @@
 import { z } from "zod";
 import type { AssetResponseDto } from "@immich/sdk";
 import { evaluateDuplicateGroup } from "@immich-dedupe/rule-engine";
-import type { DuplicateDecision, DuplicateGroup, ExecutionFailureStage, ExecutionResult } from "@immich-dedupe/shared";
+import type { DuplicateDecision, DuplicateGroup, ExecutionFailureStage, ExecutionResult, ExecutionCheckpoint } from "@immich-dedupe/shared";
 import type { ImmichClient } from "./immichClient";
 import { normalizeDuplicates } from "./normalizeDuplicates";
 
-const assetSchema = z.object({
+export const assetSchema = z.object({
   id: z.string().min(1), duplicateId: z.string().nullable(),
   originalFileName: z.string().min(1), originalPath: z.string().min(1),
   type: z.string(), width: z.number().nullable(), height: z.number().nullable(),
@@ -18,19 +18,23 @@ const assetSchema = z.object({
   }).nullish(),
 });
 const albumListSchema = z.array(z.object({ id: z.string().min(1), albumName: z.string() }));
-const albumDetailSchema = z.object({
+export const albumDetailSchema = z.object({
   id: z.string().min(1), assets: z.array(z.object({ id: z.string().min(1) })),
 });
-const groupListSchema = z.array(z.object({
+export const groupListSchema = z.array(z.object({
   duplicateId: z.string().min(1), assets: z.array(z.object({ id: z.string().min(1) })),
 }));
 const resolutionSchema = z.array(z.object({
   id: z.string().min(1), success: z.literal(true), error: z.unknown().optional(), errorMessage: z.string().optional(),
 })).nonempty();
 
+export class CheckpointFailure extends Error {
+  constructor(public result: ExecutionResult) { super("Recovery checkpoint could not be persisted; execution stopped"); }
+}
+
 export function createDecisionExecutor(
   client: Pick<ImmichClient, "addAssetsToAlbums" | "getAssetInfo" | "resolveDuplicates" | "getAssetDuplicates" | "getAllAlbums" | "getAlbumInfo">,
-  options: { delay?: (ms: number) => Promise<void> } = {}
+  options: { delay?: (ms: number) => Promise<void>; onCheckpoint?: (event: ExecutionCheckpoint) => Promise<void> } = {}
 ) {
   const delay = options.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
@@ -54,6 +58,13 @@ export function createDecisionExecutor(
     };
     let stage: ExecutionFailureStage = "preflight";
     let mutationSubmitted = false;
+    const checkpoint = async (event: ExecutionCheckpoint) => {
+      try { await options.onCheckpoint?.(event); }
+      catch {
+        throw new CheckpointFailure({ ...result, outcome: mutationSubmitted ? "needs-verification" : "failed", failureStage: stage,
+          message: "Recovery checkpoint could not be persisted; inspect recovery evidence before retrying" });
+      }
+    };
     try {
       const keepId = result.keepAssetId;
       const trashId = result.trashAssetId;
@@ -91,6 +102,9 @@ export function createDecisionExecutor(
       const keepIds = new Set(keepAlbums.map((album) => album.id));
       result.proposedAlbumIds = trashAlbums.filter((album) => !keepIds.has(album.id)).map((album) => album.id);
       result.skippedAlbumIds = trashAlbums.filter((album) => keepIds.has(album.id)).map((album) => album.id);
+      await checkpoint({ kind: "preflight", snapshot: freshGroup.assets,
+        requiredAlbumIds: trashAlbums.map((album) => album.id),
+        proposedAlbumIds: result.proposedAlbumIds, skippedAlbumIds: result.skippedAlbumIds });
       if (dryRun) {
         result.outcome = "dry-run";
         result.message = "Dry run: no changes executed";
@@ -99,6 +113,7 @@ export function createDecisionExecutor(
 
       if (result.proposedAlbumIds.length) {
         stage = "album-transfer";
+        await checkpoint({ kind: "album-intent", albumIds: result.proposedAlbumIds });
         mutationSubmitted = true;
         let response: Awaited<ReturnType<ImmichClient["addAssetsToAlbums"]>> | undefined;
         let transferError: unknown;
@@ -109,6 +124,8 @@ export function createDecisionExecutor(
         } catch (error) {
           transferError = error;
         }
+        await checkpoint({ kind: "album-response", accepted: response?.success === true && response.error == null,
+          error: transferError ? "Album request failed or its response was lost" : response?.success === true ? null : "Album request did not explicitly succeed" });
         // Even a failed/ambiguous response can follow partial changes: retain positive membership evidence.
         stage = "album-verification";
         const checks = await Promise.allSettled(result.proposedAlbumIds.map(async (id) => {
@@ -119,6 +136,7 @@ export function createDecisionExecutor(
           const check = checks[index];
           return check.status === "fulfilled" && check.value;
         });
+        await checkpoint({ kind: "album-observed", confirmedAlbumIds: result.transferredAlbumIds });
         if (response?.success !== true || response.error != null) {
           stage = "album-transfer";
           throw new Error(transferError instanceof Error ? transferError.message :
@@ -139,11 +157,21 @@ export function createDecisionExecutor(
       }
 
       stage = "resolution";
+      await checkpoint({ kind: "resolution-intent" });
       mutationSubmitted = true;
-      const response = resolutionSchema.parse(await client.resolveDuplicates({ duplicateResolveDto: {
-        groups: [{ duplicateId: group.groupId, keepAssetIds: [keepId], trashAssetIds: [trashId] }],
-      } }));
-      if (response.some((entry) => entry.error != null || entry.errorMessage)) throw new Error("Duplicate resolution reported an error");
+      let response: Awaited<ReturnType<ImmichClient["resolveDuplicates"]>> | undefined;
+      let resolutionError: unknown;
+      try {
+        response = await client.resolveDuplicates({ duplicateResolveDto: {
+          groups: [{ duplicateId: group.groupId, keepAssetIds: [keepId], trashAssetIds: [trashId] }],
+        } });
+      } catch (error) { resolutionError = error; }
+      const parsedResponse = resolutionSchema.safeParse(response);
+      const accepted = parsedResponse.success && !parsedResponse.data.some((entry) => entry.error != null || entry.errorMessage);
+      await checkpoint({ kind: "resolution-response", accepted,
+        items: Array.isArray(response) ? response.filter((item) => item && typeof item.id === "string" && typeof item.success === "boolean").map(({ id, success }) => ({ id, success })) : [],
+        error: accepted ? null : "Resolution request did not explicitly succeed or its response was lost" });
+      if (!accepted) throw new Error(resolutionError instanceof Error ? resolutionError.message : "Duplicate resolution did not explicitly succeed");
 
       stage = "verification";
       for (let round = 0; round < 3; round++) {
@@ -156,6 +184,7 @@ export function createDecisionExecutor(
         const resolved = trashConfirmed && loser.status === "fulfilled" && loser.value.duplicateId === null;
         const kept = keeper.status === "fulfilled" && keeper.value?.id === keepId && keeper.value.isTrashed === false;
         result.resolvedDuplicate ||= resolved;
+        await checkpoint({ kind: "verification", loserTrashed: trashConfirmed, loserUnlinked: resolved, keeperUntrashed: kept });
         if (resolved && kept) {
           result.outcome = "succeeded";
           result.executed = true;
@@ -165,6 +194,7 @@ export function createDecisionExecutor(
       }
       throw new Error("Resolution could not be fully verified after three checks; investigate before retrying");
     } catch (error) {
+      if (error instanceof CheckpointFailure) throw error;
       result.outcome = mutationSubmitted ? "needs-verification" : "failed";
       result.failureStage = stage;
       // Zod diagnostics can contain upstream payload details; keep errors concise and free of response dumps.

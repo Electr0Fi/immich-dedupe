@@ -1,10 +1,11 @@
 import fs from "fs";
 import path from "path";
+import { z } from "zod";
 import type { ExecutionResult } from "@immich-dedupe/shared";
 
 // New fields are optional so historical entries remain readable without migration.
 export type ExecutionLogEntry = Partial<Pick<ExecutionResult,
-  "outcome" | "failureStage" | "proposedAlbumIds" | "transferredAlbumIds" | "skippedAlbumIds"
+  "runId" | "attemptId" | "outcome" | "failureStage" | "proposedAlbumIds" | "transferredAlbumIds" | "skippedAlbumIds"
 >> & {
   timestamp: string;
   groupId: string;
@@ -28,11 +29,13 @@ export function createExecutionLog(logPath: string) {
       return [];
     }
 
-    try {
-      return JSON.parse(fs.readFileSync(logPath, "utf-8"));
-    } catch {
-      return [];
-    }
+    const schema = z.array(z.object({
+      timestamp: z.string(), groupId: z.string().min(1), mode: z.enum(["execute", "dry-run"]),
+      keepAssetId: z.string().nullable(), trashAssetId: z.string().nullable(),
+      executed: z.boolean(), resolvedDuplicate: z.boolean(), trashedAsset: z.boolean(), message: z.string(),
+    }).passthrough());
+    try { return schema.parse(JSON.parse(fs.readFileSync(logPath, "utf-8"))) as ExecutionLogEntry[]; }
+    catch { throw new Error("Execution log is invalid or unreadable; original file preserved"); }
   }
 
   function appendExecutionLog(entry: ExecutionLogEntry) {
@@ -50,22 +53,11 @@ export function createExecutionLog(logPath: string) {
     return existing.length;
   }
 
-  function getProcessedGroupIds(): Set<string> {
-    return new Set(
-      loadExecutionLog()
-        .filter((entry) => entry.mode === "execute")
-        .filter((entry) => entry.executed)
-        .filter((entry) => entry.resolvedDuplicate)
-        .filter((entry) => entry.trashedAsset)
-        .map((entry) => entry.groupId)
-    );
-  }
-
   function getExecutionLogPath(): string {
     return logPath;
   }
 
-  return { loadExecutionLog, appendExecutionLog, clearExecutionLog, getProcessedGroupIds, getExecutionLogPath };
+  return { loadExecutionLog, appendExecutionLog, clearExecutionLog, getExecutionLogPath };
 }
 
 export type ExecutionLog = ReturnType<typeof createExecutionLog>;

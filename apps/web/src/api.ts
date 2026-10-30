@@ -1,30 +1,36 @@
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
 
-async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`);
-
-  if (!response.ok) {
-    throw new Error(`GET ${path} failed: ${response.status}`);
+export class ApiError extends Error {
+  status: number;
+  partialExecution?: ExecutionRunResponse;
+  constructor(status: number, message: string, partialExecution?: ExecutionRunResponse) {
+    super(`HTTP ${status}: ${message}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.partialExecution = partialExecution;
   }
+}
 
-  return response.json();
+async function readResponse<T>(response: Response): Promise<T> {
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const partial = data?.partialExecution;
+    throw new ApiError(response.status, typeof data?.error === 'string' ? data.error : response.statusText,
+      partial && Array.isArray(partial.results) && typeof partial.runId === 'string' ? partial : undefined);
+  }
+  if (data === null) throw new Error('The API returned an invalid JSON response');
+  return data;
+}
+
+async function apiGet<T>(path: string): Promise<T> {
+  return readResponse<T>(await fetch(`${API_BASE_URL}${path}`));
 }
 
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw new Error(`POST ${path} failed: ${response.status}`);
-  }
-
-  return response.json();
+  return readResponse<T>(await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }));
 }
 
 export type ExecutionStatusResponse = {
@@ -41,6 +47,8 @@ export type ExecutionOutcome = 'dry-run' | 'succeeded' | 'failed' | 'needs-verif
 export type ExecutionFailureStage = 'preflight' | 'album-transfer' | 'album-verification' | 'resolution' | 'verification';
 
 export type ExecutionLogEntry = {
+  runId?: string;
+  attemptId?: string;
   outcome?: ExecutionOutcome;
   failureStage?: ExecutionFailureStage | null;
   proposedAlbumIds?: string[];
@@ -80,6 +88,8 @@ export type DuplicateAnalysisResponse = {
 };
 
 export type ExecutionRunResponse = {
+  runId?: string;
+  excludedGroups?: Array<{ groupId: string; reason: 'processed' | 'legacy' | 'quarantined'; attemptIds: string[] }>;
   stoppedEarly: boolean;
   stopReason: string | null;
   ok: boolean;
@@ -113,6 +123,8 @@ export type ExecutionPlanResponse = {
 };
 
 export type ExecutionResult = {
+  runId?: string;
+  attemptId?: string;
   outcome: ExecutionOutcome;
   failureStage: ExecutionFailureStage | null;
   proposedAlbumIds: string[];
@@ -213,4 +225,41 @@ export type ServerStatusResponse = {
 
 export function getServerStatus() {
   return apiGet<ServerStatusResponse>("/settings/status");
+}
+
+export type RecoveryAttempt = {
+  attemptId: string;
+  runId: string;
+  groupId: string;
+  mode: 'dry-run' | 'execute';
+  keepAssetId: string | null;
+  trashAssetId: string | null;
+  startedAt: string;
+  checkpoints: Array<{ timestamp: string; event: { kind: string; confirmedAlbumIds?: string[] } }>;
+  result: ExecutionResult | null;
+  assessments: Array<{ checkedAt: string; classification: 'verified-resolved' | 'pair-intact' | 'inconclusive'; message: string; evidence: string[] }>;
+  releasedAt: string | null;
+};
+export type RecoveryList = {
+  ok: boolean;
+  health: 'ready' | 'unavailable';
+  error: string | null;
+  activeRunId: string | null;
+  scope: { apiUrl: string; accountId: string } | null;
+  items: RecoveryAttempt[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+export function getRecovery(offset = 0, limit = 25) {
+  return apiGet<RecoveryList>(`/execution/recovery?offset=${offset}&limit=${limit}`);
+}
+export function getRecoveryAttempt(attemptId: string) {
+  return apiGet<{ ok: boolean; attempt: RecoveryAttempt }>(`/execution/recovery/${encodeURIComponent(attemptId)}`);
+}
+export function recheckAttempt(attemptId: string) {
+  return apiPost<{ ok: boolean; attempt: RecoveryAttempt }>(`/execution/recovery/${encodeURIComponent(attemptId)}/recheck`, {});
+}
+export function releaseAttempt(attemptId: string) {
+  return apiPost<{ ok: boolean; attempt: RecoveryAttempt }>(`/execution/recovery/${encodeURIComponent(attemptId)}/release`, { confirm: true });
 }

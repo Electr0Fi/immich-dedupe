@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { evaluateDuplicateGroup } from '@immich-dedupe/rule-engine';
-import type { DuplicateDecision, ExecutionResult } from '@immich-dedupe/shared';
+import type { DuplicateDecision } from '@immich-dedupe/shared';
 import type { ImmichClient } from '../src/immichClient';
 import { createDecisionExecutor } from '../src/executeDecision';
-import { createPlanExecutor } from '../src/executePlan';
-import { fakeImmich, group, executionHarness, temporaryLog } from './fixtures';
+import { fakeImmich, group, executionHarness } from './fixtures';
 
 const input = group();
 const decision = evaluateDuplicateGroup(input);
@@ -195,44 +194,6 @@ test('delayed postconditions can succeed on the third verification read', async 
   assert.deepEqual(h.mutations, ['add', 'resolve']);
 });
 
-test('batch defaults to dry-run, skips processed groups and logs proposals without marking processed', async (t) => {
-  const log = temporaryLog(t);
-  log.appendExecutionLog({ timestamp: new Date().toISOString(), groupId: 'processed', mode: 'execute',
-    keepAssetId: 'processed-keep', trashAssetId: 'processed-trash', executed: true,
-    resolvedDuplicate: true, trashedAsset: true, message: 'Done' });
-  const h = executionHarness('pending');
-  const groups = [group('processed'), group('pending'), group('beyond-limit')];
-  const execute = createPlanExecutor({ executeDuplicateDecision: createDecisionExecutor(h.client), log });
-  const batch = await execute(groups, groups.map(evaluateDuplicateGroup), 1);
-  assert.deepEqual(batch.results.map((r) => r.groupId), ['pending']); assert.equal(batch.stoppedEarly, false);
-  assert.equal(log.loadExecutionLog().length, 2); assert.deepEqual([...log.getProcessedGroupIds()], ['processed']);
-  assert.equal(log.loadExecutionLog()[1].outcome, 'dry-run'); assert.deepEqual(h.mutations, []);
-});
-
-for (const outcome of ['failed', 'needs-verification'] as const) {
-  test(`batch stops after ${outcome} and leaves later groups untouched`, async (t) => {
-    const log = temporaryLog(t); const groups = [group('first'), group('second')]; let attempts = 0;
-    const execute = createPlanExecutor({ log, executeDuplicateDecision: async (g, d, dryRun) => {
-      attempts++;
-      const h = executionHarness(g.groupId);
-      const result = await createDecisionExecutor(h.client)(g, d, dryRun);
-      return { ...result, outcome, failureStage: 'preflight', message: 'Stop here' } satisfies ExecutionResult;
-    } });
-    const batch = await execute(groups, groups.map(evaluateDuplicateGroup), 2);
-    assert.equal(attempts, 1); assert.equal(batch.results.length, 1);
-    assert.equal(batch.stoppedEarly, true); assert.match(batch.stopReason!, /Stop here/);
-    assert.equal(log.loadExecutionLog().length, 1);
-  });
-}
-
-test('unexpected executor exceptions stop the batch', async (t) => {
-  const execute = createPlanExecutor({ log: temporaryLog(t), executeDuplicateDecision: async () => { throw new Error('Unexpected'); } });
-  const groups = [group('first'), group('second')];
-  const batch = await execute(groups, groups.map(evaluateDuplicateGroup), 2, false);
-  assert.equal(batch.stoppedEarly, true); assert.equal(batch.results.length, 1);
-  assert.equal(batch.results[0].outcome, 'needs-verification');
-});
-
 test('a changed keeper selection is rejected rather than silently substituted', async () => {
   const h = setup();
   Object.assign(h.assets.get('group-keep')!, { originalPath: '/photos/internal/photo.jpg', exifInfo: { fileSizeInByte: 100 } });
@@ -274,18 +235,6 @@ test('unconfirmed existing memberships block resolution even with no proposed ad
   const result = await h.execute(input, decision, false);
   assert.equal(result.outcome, 'failed'); assert.equal(result.failureStage, 'album-verification');
   assert.deepEqual(h.mutations, []);
-});
-
-test('audit write failures stop further work and retain the returned result', async () => {
-  const h = setup(); let attempts = 0;
-  const execute = createPlanExecutor({
-    executeDuplicateDecision: async (g, d, mode) => { attempts++; return h.execute(g, d, mode); },
-    log: { getProcessedGroupIds: () => new Set(), appendExecutionLog: () => { throw new Error('Disk full'); } },
-  });
-  const groups = [group(), group('second')];
-  const batch = await execute(groups, groups.map(evaluateDuplicateGroup), 2);
-  assert.equal(attempts, 1); assert.equal(batch.results[0].outcome, 'dry-run');
-  assert.equal(batch.stoppedEarly, true); assert.match(batch.stopReason!, /log could not be written/);
 });
 
 test('fresh EXIF dimensions can supply known resolution when top-level dimensions are null', async () => {

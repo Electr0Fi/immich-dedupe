@@ -3,13 +3,14 @@ import { once } from 'node:events';
 import { test, type TestContext } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { createApp, type AppDependencies } from '../src/app';
-import { fakeImmich, rawGroup, rawAsset, album, temporaryLog, executionHarness } from './fixtures';
+import { fakeImmich, rawGroup, rawAsset, album, temporaryLog, executionHarness, temporaryJournal } from './fixtures';
 
 function dependencies(t: TestContext, overrides: Partial<AppDependencies> = {}): AppDependencies {
   const groups = [rawGroup('one'), rawGroup('two'), rawGroup('three')];
   return {
     config: { IMMICH_URL: 'http://immich.invalid/api', IMMICH_API_KEY: 'test-only' },
     log: temporaryLog(t),
+    journal: temporaryJournal(t),
     fetch: async () => { throw new Error('Unexpected external fetch'); },
     saveConnection: () => { throw new Error('Unexpected settings write'); },
     immich: fakeImmich({
@@ -37,12 +38,12 @@ async function serve(t: TestContext, deps: AppDependencies) {
   return `http://127.0.0.1:${address.port}`;
 }
 
-test('app factory works without environment variables, SDK initialization, storage access or listening', () => {
+test('app factory works without environment variables, SDK initialization, storage access or listening', (t) => {
   const unexpected = () => { throw new Error('Unexpected dependency access'); };
   const app = createApp({
-    config: { IMMICH_URL: '', IMMICH_API_KEY: '' }, immich: fakeImmich(),
+    config: { IMMICH_URL: '', IMMICH_API_KEY: '' }, immich: fakeImmich(), journal: temporaryJournal(t),
     log: { loadExecutionLog: unexpected, appendExecutionLog: unexpected, clearExecutionLog: unexpected,
-      getProcessedGroupIds: unexpected, getExecutionLogPath: unexpected },
+      getExecutionLogPath: unexpected },
     fetch: async () => unexpected(), saveConnection: unexpected,
   });
   assert.equal(typeof app, 'function');
@@ -90,7 +91,7 @@ test('album enrichment reaches preview and single-group dry-run without mutation
   assert.equal(execution.execution.outcome, 'dry-run');
   assert.deepEqual(execution.execution.proposedAlbumIds, ['missing']);
   assert.deepEqual(execution.execution.transferredAlbumIds, []);
-  assert.equal(deps.log.loadExecutionLog().length, 0, 'single-group logging is unchanged in PR 1');
+  assert.equal(deps.log.loadExecutionLog().length, 1, 'single-group execution now uses unified logging');
   assert.equal((await fetch(`${base}/execution/duplicates/missing/preview`)).status, 404);
 });
 
@@ -231,7 +232,7 @@ test('batch failure is HTTP 200 with a stop reason and unverified outcome', asyn
   const body = await response.json();
   assert.equal(body.stoppedEarly, true); assert.ok(body.stopReason);
   assert.equal(body.results[0].outcome, 'needs-verification');
-  assert.equal(body.actuallyExecutedCount, 0); assert.equal(deps.log.getProcessedGroupIds().size, 0);
+  assert.equal(body.actuallyExecutedCount, 0); assert.equal(deps.log.loadExecutionLog()[0].executed, false);
   assert.deepEqual(h.mutations, ['add', 'resolve']);
 });
 
@@ -244,4 +245,70 @@ test('protected assets are excluded consistently from analysis, plan and preview
   assert.equal(analysis.autoResolveCount, 0); assert.equal(analysis.uncertainCount, 1);
   assert.equal(plan.items.length, 0); assert.equal(preview.executable, false);
   assert.deepEqual(h.mutations, []);
+});
+
+test('recovery HTTP API exposes evidence, validates confirmation, and never mutates during recheck/release', async (t) => {
+  const h = executionHarness('one'); h.client.resolveDuplicates = async () => { throw new Error('Lost response'); };
+  const deps = dependencies(t, { immich: h.client }); const base = await serve(t, deps);
+  const response = await (await fetch(`${base}/execution/duplicates/one`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"dryRun":false}',
+  })).json();
+  const id = response.execution.attemptId;
+  assert.ok(id && response.runId);
+  const listing = await (await fetch(`${base}/execution/recovery?limit=1`)).json();
+  assert.equal(listing.items[0].attemptId, id); assert.equal(listing.total, 1);
+  assert.equal((await fetch(`${base}/execution/recovery?limit=0`)).status, 400);
+  assert.equal((await fetch(`${base}/execution/recovery/not-a-uuid`)).status, 400);
+  const detail = await (await fetch(`${base}/execution/recovery/${id}`)).json();
+  assert.equal(detail.attempt.result.outcome, 'needs-verification'); assert.ok(detail.attempt.checkpoints.length);
+  const mutations = [...h.mutations];
+  const checked = await (await fetch(`${base}/execution/recovery/${id}/recheck`, { method: 'POST' })).json();
+  assert.equal(checked.attempt.assessments.at(-1).classification, 'pair-intact');
+  assert.equal((await fetch(`${base}/execution/recovery/${id}/release`, { method: 'POST' })).status, 400);
+  assert.equal((await fetch(`${base}/execution/recovery/${id}/release`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"confirm":true}',
+  })).status, 200);
+  assert.deepEqual(h.mutations, mutations);
+  assert.equal((await (await fetch(`${base}/execution/recovery`)).json()).total, 0);
+  assert.equal(deps.log.loadExecutionLog().length, 1);
+});
+
+test('client disconnect does not release the coordinator while work is running', async (t) => {
+  const deps = dependencies(t); const original = deps.immich.getAssetDuplicates;
+  let enter!: () => void, unblock!: () => void;
+  const started = new Promise<void>((resolve) => { enter = resolve; });
+  const wait = new Promise<void>((resolve) => { unblock = resolve; });
+  deps.immich.getAssetDuplicates = async (args) => { enter(); await wait; return original(args); };
+  const base = await serve(t, deps); const abort = new AbortController();
+  const first = fetch(`${base}/execution/run`, { method: 'POST', signal: abort.signal });
+  // Attach rejection handler immediately; abort is an expected client-side outcome.
+  const disconnected = assert.rejects(first);
+  await started; abort.abort(); await disconnected;
+  assert.equal((await fetch(`${base}/health`)).status, 200);
+  assert.equal((await fetch(`${base}/execution/run`, { method: 'POST' })).status, 409);
+  assert.equal((await fetch(`${base}/execution/log/clear`, { method: 'POST' })).status, 409);
+  unblock();
+  let active = true;
+  for (let i = 0; i < 150; i++) {
+    active = Boolean((await (await fetch(`${base}/execution/recovery`)).json()).activeRunId);
+    if (!active) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(active, false); assert.equal(deps.log.loadExecutionLog().length, 3);
+});
+
+test('checkpoint failures return HTTP 503 with identifiers and partial execution results', async (t) => {
+  const h = executionHarness('one'); const deps = dependencies(t, { immich: h.client });
+  const checkpoint = deps.journal.checkpoint.bind(deps.journal);
+  deps.journal.checkpoint = (scope, id, event) => {
+    if (event.kind === 'resolution-intent') throw new Error('Simulated checkpoint failure');
+    checkpoint(scope, id, event);
+  };
+  const base = await serve(t, deps);
+  const response = await fetch(`${base}/execution/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"dryRun":false}' });
+  assert.equal(response.status, 503); const body = await response.json();
+  assert.equal(body.code, 'journal_unavailable'); assert.ok(body.runId);
+  assert.equal(body.partialExecution.results[0].outcome, 'needs-verification');
+  assert.deepEqual(body.partialExecution.results[0].transferredAlbumIds, ['missing']);
+  assert.deepEqual(h.mutations, ['add']);
 });

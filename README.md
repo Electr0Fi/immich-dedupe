@@ -10,6 +10,10 @@ A local React/Express application for reviewing duplicate groups already identif
 - Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs as JSON or CSV.
 - Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.
 - Recheck group membership, asset details, file sizes, and album memberships before execution rather than relying on the preview cache.
+- Single-group and batch execution share safety checks, logging, run/attempt IDs, and processed/quarantine exclusions. Overlapping execution, recovery, or log-clearing requests return HTTP 409 within one API process.
+- Persist checkpoints before mutations and quarantine unfinished or uncertain attempts across restarts, including their group and selected asset IDs. Unrelated groups remain usable.
+- Inspect recovery evidence in Logs, recheck outcomes without changing Immich, and explicitly allow a new attempt only after another fresh intact-pair check. Release does not run cleanup or override other quarantines.
+- Clear display log entries without deleting recovery evidence, processed groups, or legacy exclusions.
 
 ### Automatic cleanup requirements
 
@@ -23,8 +27,8 @@ A local React/Express application for reviewing duplicate groups already identif
 - Manual review displays decisions only. Manual keeper selection, thumbnails, configurable rules, and the dedicated History view are not available.
 - Scans examine the first selected number of groups; resumable full-library scanning is not available.
 - Album protection covers memberships visible to your configured Immich account. Operations are not transactional and may leave partial changes.
-- Run one batch at a time. Automatic recovery, execution locking, and durable retry quarantine are not available; investigate uncertain outcomes before retrying.
-- Single-group execution does not yet use batch logging or processed-group tracking. Clearing batch logs also clears that tracking and does not undo Immich changes.
+- Use one API instance per data directory. Multi-process locking, automatic retry/resumption, rollback, and restoration are not available. Investigate uncertain outcomes and recheck them before explicitly releasing a pair.
+- Corrupt recovery storage disables execution and recovery-changing actions until repaired. The app never silently resets evidence or automatically promotes interrupted temporary files. Display logs are a separate audit view, not the recovery authority.
 - Connection changes require an API restart. Clear Credentials clears the form only. Performance settings and most safety controls are placeholders; execution safety is enforced by backend code.
 - This is a trusted local tool: the API has no authentication, allows cross-origin requests, and the connection-settings endpoint returns the saved API key. Do not expose it as a public service.
 - Packaged deployment and CI are not configured. Navigation is currently hidden below 900 px without an alternate mobile menu.
@@ -45,7 +49,7 @@ IMMICH_URL=http://localhost:2283/api
 IMMICH_API_KEY=replace-with-your-key
 ```
 
-The backend requires valid initial credentials to start. Include `/api` in the Immich API base URL where appropriate, without a trailing slash. Keep credentials out of Git.
+The backend requires valid initial credentials to start. The API key must also permit the current-user identity lookup used to scope execution evidence to the server URL and account. Include `/api` in the Immich API base URL where appropriate, without a trailing slash. Keep credentials out of Git.
 
 Optionally set the Dedupe backend URL in `apps/web/.env`:
 
@@ -81,7 +85,22 @@ curl -X POST http://localhost:3001/execution/run \
   -d '{"scanLimit":10,"executeLimit":1,"dryRun":true}'
 ```
 
-Batch logs live in `apps/api/data/execution-log.json` and are ignored by Git. Existing historical log entries remain readable; newer fields are not retroactively added.
+Display logs live in `apps/api/data/execution-log.json`. Recovery records live separately under `apps/api/data/execution-journal/`, with one versioned JSON file per run. Both are ignored by Git. Preserve this directory: clearing display logs does not reset recovery or successful-history exclusions.
+
+At first execution or log clearing, recorded successful legacy group IDs are copied once into `legacy-exclusions.json` for the current connection. The old log is preserved and those exclusions are labeled legacy evidence, not verified attempts. Changing accounts or server URLs never imports the old log again into another library.
+
+Recovery records are committed using a flushed temporary file, atomic rename and directory flush. The implementation requires an environment supporting directory fsync (validated on Linux). These checks protect application/process failures; they do not make Immich calls transactional or guarantee against hardware/storage failure. Run only one API instance against the directory.
+
+### Recovery workflow
+
+1. Open Logs → Execution Recovery and refresh the unresolved list. Details include original selections, checkpoint progress, partial effects, and assessment history.
+2. Choose **Recheck outcome**. Verified resolved attempts become processed exclusions. An intact pair stays quarantined; incomplete or conflicting evidence remains inconclusive.
+3. If the pair is intact, **Allow new attempt** asks for explicit confirmation and performs another fresh check. No cleanup runs. Other unresolved attempts involving these assets can still block them.
+4. Start a separate dry-run or execution request from Dedupe when appropriate. Mutations are never automatically replayed.
+
+HTTP 503 denotes unavailable identity/journal storage or checkpoint failure. If work already began, the response includes the run ID and partial results, which the WebUI displays. A display-log write failure stops the batch but a committed verified journal result remains authoritative.
+
+Recovery endpoints: `GET /execution/recovery` (offset/limit pagination), `GET /execution/recovery/:attemptId`, `POST /execution/recovery/:attemptId/recheck`, and `POST /execution/recovery/:attemptId/release` with `{ "confirm": true }`. Rechecks and releases only read Immich and write local evidence.
 
 ## Architecture
 

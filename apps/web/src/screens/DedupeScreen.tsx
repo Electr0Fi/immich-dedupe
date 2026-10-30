@@ -1,6 +1,7 @@
 import { ExecutionResults } from '../components/ExecutionResults';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ApiError,
   getDuplicateAnalysis,
   getExecutionPlan,
   getExecutionStatus,
@@ -76,7 +77,10 @@ export function DedupeScreen({ requireConfirmation }: Props) {
         await refresh();
       }
     } catch (err) {
-      if (mounted.current) setError(err instanceof Error ? err.message : 'Unknown error');
+      if (mounted.current) {
+        if (err instanceof ApiError && err.partialExecution) setLastRun(err.partialExecution);
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
     } finally {
       if (mounted.current) setLoading(false);
     }
@@ -99,7 +103,10 @@ export function DedupeScreen({ requireConfirmation }: Props) {
         await refresh();
       }
     } catch (err) {
-      if (mounted.current) setError(err instanceof Error ? err.message : 'Unknown error');
+      if (mounted.current) {
+        if (err instanceof ApiError && err.partialExecution) setLastRun(err.partialExecution);
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
     } finally {
       if (mounted.current) setLoading(false);
     }

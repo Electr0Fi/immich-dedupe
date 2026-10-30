@@ -4,6 +4,13 @@ export function ExecutionResults({ run }: { run: ExecutionRunResponse | null }) 
   return (
     <section className="card">
       <h2>Last Run Results</h2>
+      {run?.runId && <p className="run-identifier">Run: {run.runId}</p>}
+      {run?.excludedGroups && run.excludedGroups.length > 0 && (
+        <details>
+          <summary>{run.excludedGroups.length} groups excluded from execution</summary>
+          <ul>{run.excludedGroups.map((group) => <li key={group.groupId}>{group.groupId}: {group.reason}</li>)}</ul>
+        </details>
+      )}
       {run?.stoppedEarly && (
         <p className="error" role="alert">Batch stopped: {run.stopReason}</p>
       )}
@@ -26,7 +33,7 @@ export function ExecutionResults({ run }: { run: ExecutionRunResponse | null }) 
             <tbody>
               {run.results.map((result) => (
                 <tr key={`${result.groupId}-${result.mode}`}>
-                  <td>{result.groupId}</td>
+                  <td>{result.groupId}{result.attemptId && <small className="attempt-identifier">Attempt: {result.attemptId}</small>}</td>
                   <td>{result.mode}</td>
                   <td>{result.outcome === 'needs-verification' ? 'Needs verification' : result.outcome}</td>
                   <td>{result.failureStage ?? '—'}</td>

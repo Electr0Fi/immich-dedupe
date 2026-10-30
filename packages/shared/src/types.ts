@@ -92,12 +92,16 @@ export type ExecutionOutcome = "dry-run" | "succeeded" | "failed" | "needs-verif
 export type ExecutionFailureStage = "preflight" | "album-transfer" | "album-verification" | "resolution" | "verification";
 
 export type ExecutionBatchResult = {
+  runId?: string;
+  excludedGroups?: ExecutionExclusion[];
   results: ExecutionResult[];
   stoppedEarly: boolean;
   stopReason: string | null;
 };
 
 export type ExecutionResult = {
+  runId?: string;
+  attemptId?: string;
   outcome: ExecutionOutcome;
   failureStage: ExecutionFailureStage | null;
   proposedAlbumIds: string[];
@@ -116,4 +120,46 @@ export type ExecutionResult = {
   trashedAsset: boolean;
 
   message: string;
+};
+
+export type ExecutionCheckpoint =
+  | { kind: "preflight"; snapshot: AssetRecord[]; requiredAlbumIds: string[]; proposedAlbumIds: string[]; skippedAlbumIds: string[] }
+  | { kind: "album-intent"; albumIds: string[] }
+  | { kind: "album-response"; accepted: boolean; error: string | null }
+  | { kind: "album-observed"; confirmedAlbumIds: string[] }
+  | { kind: "resolution-intent" }
+  | { kind: "resolution-response"; accepted: boolean; items: Array<{ id: string; success: boolean }>; error: string | null }
+  | { kind: "verification"; loserTrashed: boolean; loserUnlinked: boolean; keeperUntrashed: boolean };
+
+export type RecoveryAssessment = {
+  checkedAt: string;
+  classification: "verified-resolved" | "pair-intact" | "inconclusive";
+  message: string;
+  evidence: string[];
+};
+export type RecoveryAttempt = {
+  attemptId: string;
+  runId: string;
+  groupId: string;
+  mode: ExecutionMode;
+  keepAssetId: string | null;
+  trashAssetId: string | null;
+  startedAt: string;
+  checkpoints: Array<{ timestamp: string; event: ExecutionCheckpoint }>;
+  result: ExecutionResult | null;
+  assessments: RecoveryAssessment[];
+  releasedAt: string | null;
+};
+export type ExecutionScope = { apiUrl: string; accountId: string };
+export type ExecutionExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined"; attemptIds: string[] };
+export type RecoveryList = {
+  ok: boolean;
+  health: "ready" | "unavailable";
+  error: string | null;
+  activeRunId: string | null;
+  scope: ExecutionScope | null;
+  items: RecoveryAttempt[];
+  total: number;
+  offset: number;
+  limit: number;
 };

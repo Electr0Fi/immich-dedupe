@@ -563,3 +563,30 @@ input[type='checkbox'] {
   max-width: 100%;
   overflow-x: auto;
 }
+
+.run-identifier, .attempt-identifier {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: #5a6475;
+}
+
+.recovery-attempt {
+  margin: 18px 0;
+  padding: 16px 0;
+  border-top: 1px solid #dde2ea;
+}
+
+.recovery-attempt dd {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  margin-bottom: 10px;
+}
+
+.recovery-evidence {
+  max-height: 400px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

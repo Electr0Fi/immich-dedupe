@@ -9,7 +9,7 @@ const success: ExecutionLogEntry = {
   resolvedDuplicate: true, trashedAsset: true, message: 'Done',
 };
 
-test('only fully successful live records mark a group processed, and clear removes tracking', (t) => {
+test('display log preserves legacy entries and clears independently of recovery storage', (t) => {
   const log = temporaryLog(t);
   assert.deepEqual(log.loadExecutionLog(), []);
   const entries: ExecutionLogEntry[] = [
@@ -21,8 +21,6 @@ test('only fully successful live records mark a group processed, and clear remov
   ];
   for (const entry of entries) log.appendExecutionLog(entry);
   assert.deepEqual(log.loadExecutionLog(), entries);
-  assert.deepEqual([...log.getProcessedGroupIds()], ['success']);
   assert.equal(log.clearExecutionLog(), entries.length);
   assert.deepEqual(log.loadExecutionLog(), []);
-  assert.equal(log.getProcessedGroupIds().size, 0);
 });

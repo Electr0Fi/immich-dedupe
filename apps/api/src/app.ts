@@ -11,13 +11,16 @@ import type {
   DuplicateGroup,
   ExecutionPlanItem,
 } from "@immich-dedupe/shared";
-import { createDecisionExecutor } from "./executeDecision";
-import { createPlanExecutor, isExecutableDecision } from "./executePlan";
+import { createExecutionService, ExecutionServiceError } from "./executionService";
+import type { ExecutionJournal } from "./executionJournal";
+import { z } from "zod";
+import { isExecutableDecision } from "./executePlan";
 import type { ExecutionLogEntry, ExecutionLog } from "./executionLog";
 import type { ImmichClient } from "./immichClient";
 
 export type AppDependencies = {
   immich: ImmichClient;
+  journal: ExecutionJournal;
   config: { IMMICH_URL: string; IMMICH_API_KEY: string };
   log: ExecutionLog;
   fetch: typeof globalThis.fetch;
@@ -27,11 +30,10 @@ export type AppDependencies = {
 export function createApp(dependencies: AppDependencies) {
   const { immich, config: env, log, fetch, saveConnection } = dependencies;
   const { getAllAlbums, getAlbumInfo, getAssetDuplicates, getAssetInfo, pingServer } = immich;
-  const { clearExecutionLog, getExecutionLogPath, getProcessedGroupIds, loadExecutionLog } = log;
+  const { getExecutionLogPath, loadExecutionLog } = log;
   const enrichDuplicatesWithAssetInfo = createAssetInfoEnricher(immich);
   const enrichDuplicatesWithAlbums = createAlbumEnricher(immich);
-  const executeDuplicateDecision = createDecisionExecutor(immich);
-  const executePlan = createPlanExecutor({ executeDuplicateDecision, log });
+  const execution = createExecutionService({ client: immich, apiUrl: env.IMMICH_URL, journal: dependencies.journal, log });
   const app = express();
 
   app.use(cors());
@@ -136,6 +138,8 @@ export function createApp(dependencies: AppDependencies) {
   function buildExecutionLogCsv(log: ExecutionLogEntry[]): string {
     const columns: Array<keyof ExecutionLogEntry> = [
       "timestamp",
+      "runId",
+      "attemptId",
       "groupId",
       "mode",
       "keepAssetId",
@@ -578,15 +582,31 @@ export function createApp(dependencies: AppDependencies) {
       .send(buildExecutionLogCsv(log));
   });
 
-  app.post("/execution/log/clear", (_req, res) => {
-    const clearedCount = clearExecutionLog();
+  function executionError(res: express.Response, error: unknown) {
+    if (error instanceof ExecutionServiceError) return res.status(error.status).json({ ok: false, code: error.code, error: error.message, ...error.details });
+    return res.status(503).json({ ok: false, error: error instanceof Error && error.name !== "ZodError" ? error.message : "Recovery state is unavailable" });
+  }
 
-    res.json({
-      ok: true,
-      path: getExecutionLogPath(),
-      clearedCount,
-    });
+  app.post("/execution/log/clear", async (_req, res) => {
+    try { res.json({ ok: true, ...await execution.clearLog() }); }
+    catch (error) { executionError(res, error); }
   });
+  app.get("/execution/recovery", async (req, res) => {
+    const parsed = z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(100).default(25) }).safeParse(req.query);
+    if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid recovery pagination" });
+    try { res.json(await execution.list(parsed.data.offset, parsed.data.limit)); } catch (error) { executionError(res, error); }
+  });
+  app.get("/execution/recovery/:attemptId", async (req, res) => {
+    if (!z.string().uuid().safeParse(req.params.attemptId).success) return res.status(400).json({ ok: false, error: "Invalid attempt ID" });
+    try { res.json({ ok: true, attempt: await execution.detail(req.params.attemptId) }); } catch (error) { executionError(res, error); }
+  });
+  for (const action of ["recheck", "release"] as const) {
+    app.post(`/execution/recovery/:attemptId/${action}`, async (req, res) => {
+      if (!z.string().uuid().safeParse(req.params.attemptId).success) return res.status(400).json({ ok: false, error: "Invalid attempt ID" });
+      if (action === "release" && !z.object({ confirm: z.literal(true) }).safeParse(req.body).success) return res.status(400).json({ ok: false, error: "Explicit confirmation is required" });
+      try { res.json({ ok: true, attempt: await execution.recheck(req.params.attemptId, action === "release") }); } catch (error) { executionError(res, error); }
+    });
+  }
 
   app.get("/execution/status", async (req, res) => {
     try {
@@ -701,118 +721,35 @@ export function createApp(dependencies: AppDependencies) {
     }
   });
 
+  async function loadExecutionGroups(scanLimit: number, groupId?: string) {
+    const duplicates = await getAssetDuplicates({});
+    const rawGroups = Array.isArray(duplicates) ? duplicates : [];
+    const selected = groupId ? rawGroups.filter((group) => group.duplicateId === groupId) : rawGroups.slice(0, scanLimit);
+    if (groupId && selected.length !== 1) throw new ExecutionServiceError(404, "group_not_found", "Duplicate group not found");
+    const normalized = normalizeDuplicates(selected);
+    const withFileSize = await enrichDuplicatesWithAssetInfo(normalized);
+    const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
+    return { groups: withAlbums.groups, decisions: evaluateDuplicateGroups(withAlbums.groups) };
+  }
+
   app.post("/execution/duplicates/:groupId", async (req, res) => {
+    const parsed = ExecutionRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid execution request", issues: parsed.error.issues });
     try {
       const groupId = req.params.groupId;
-      const parsed = ExecutionRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid execution request", issues: parsed.error.issues });
-      const { dryRun } = parsed.data;
-
-      const duplicates = await getAssetDuplicates({});
-      const rawGroups = Array.isArray(duplicates) ? duplicates : [];
-
-      const targetRawGroup = rawGroups.find(
-        (rawGroup: any) => rawGroup.duplicateId === groupId
-      );
-
-      if (!targetRawGroup) {
-        return res.status(404).json({
-          ok: false,
-          error: "Duplicate group not found",
-        });
-      }
-
-      const normalized = normalizeDuplicates([targetRawGroup]);
-      const withFileSize = await enrichDuplicatesWithAssetInfo(normalized);
-      const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
-
-      const group = withAlbums.groups[0];
-      const decision = evaluateDuplicateGroups([group])[0];
-
-      if (!group || !decision) {
-        return res.status(500).json({
-          ok: false,
-          error: "Failed to execute duplicate decision",
-        });
-      }
-
-      const result = await executeDuplicateDecision(group, decision, dryRun);
-
-      res.json({
-        ok: true,
-        dryRun,
-        decision,
-        execution: result,
-      });
-    } catch (error) {
-      console.error("POST /execution/duplicates/:groupId failed:", error);
-
-      res.status(500).json({
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
+      const batch = await execution.run({ ...parsed.data, singleGroupId: groupId, executeLimit: 1 }, () => loadExecutionGroups(1, groupId));
+      res.json({ ok: true, runId: batch.runId, dryRun: batch.dryRun, decision: batch.decision, execution: batch.results[0] });
+    } catch (error) { executionError(res, error); }
   });
-
   app.post("/execution/run", async (req, res) => {
+    const parsed = ExecutionRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid execution request", issues: parsed.error.issues });
     try {
-      const parsed = ExecutionRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid execution request", issues: parsed.error.issues });
-      const { scanLimit, executeLimit, dryRun } = parsed.data;
-
-      const duplicates = await getAssetDuplicates({});
-      const rawGroups = Array.isArray(duplicates) ? duplicates : [];
-      const slicedGroups = rawGroups.slice(0, scanLimit);
-
-      const normalized = normalizeDuplicates(slicedGroups);
-      const withFileSize = await enrichDuplicatesWithAssetInfo(normalized);
-      const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
-
-      const decisions = evaluateDuplicateGroups(withAlbums.groups);
-      const processedGroupIds = getProcessedGroupIds();
-      const eligibleCount = decisions.filter(
-        (decision) =>
-          isExecutableDecision(decision) && !processedGroupIds.has(decision.groupId)
-      ).length;
-
-      const batch = await executePlan(
-        withAlbums.groups,
-        decisions,
-        executeLimit,
-        dryRun
-      );
-
-      const { results, stoppedEarly, stopReason } = batch;
-      const actuallyExecutedCount = results.filter((result) => result.executed).length;
-      const resolvedCount = results.filter(
-        (result) => result.resolvedDuplicate
-      ).length;
-      const trashedCount = results.filter((result) => result.trashedAsset).length;
-
-      res.json({
-        ok: true,
-        dryRun,
-        scanLimit,
-        executeLimit,
-        fetchedGroups: slicedGroups.length,
-        eligibleCount,
-        actuallyExecutedCount,
-        stoppedEarly,
-        stopReason,
-        resolvedCount,
-        trashedCount,
-        results,
-      });
-    } catch (error) {
-      console.error("POST /execution/run failed:", error);
-
-      res.status(500).json({
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
+      const batch = await execution.run(parsed.data, () => loadExecutionGroups(parsed.data.scanLimit));
+      const { decision: _decision, ...response } = batch;
+      res.json(response);
+    } catch (error) { executionError(res, error); }
   });
 
   return app;
-
 }

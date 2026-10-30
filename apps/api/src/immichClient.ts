@@ -9,4 +9,4 @@ export type ImmichClient = Pick<typeof sdk,
   | "pingServer"
   | "addAssetsToAlbums"
   | "resolveDuplicates"
->;
+> & { getMyUser: () => Promise<{ id: string }> };

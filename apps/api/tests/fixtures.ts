@@ -8,6 +8,7 @@ import {
 } from '@immich/sdk';
 import { normalizeDuplicates } from '../src/normalizeDuplicates';
 import { createExecutionLog } from '../src/executionLog';
+import { createExecutionJournal } from "../src/executionJournal";
 import type { ImmichClient } from '../src/immichClient';
 
 const timestamp = '2026-01-01T00:00:00.000Z';
@@ -62,7 +63,7 @@ export function fakeImmich(overrides: Partial<ImmichClient> = {}): ImmichClient 
   return {
     getAssetDuplicates: unexpected, getAssetInfo: unexpected, getAllAlbums: unexpected,
     getAlbumInfo: unexpected, pingServer: unexpected, addAssetsToAlbums: unexpected,
-    resolveDuplicates: unexpected, ...overrides,
+    resolveDuplicates: unexpected, getMyUser: async () => ({ id: "test-user" }), ...overrides,
   };
 }
 
@@ -125,4 +126,10 @@ export function executionHarness(groupId = 'group') {
   });
   return { client, raw, assets, albums, calls, mutations, delays,
     delay: async (ms: number) => { delays.push(ms); } };
+}
+
+export function temporaryJournal(t: TestContext) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'immich-recovery-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return createExecutionJournal(path.join(dir, 'execution-journal'));
 }

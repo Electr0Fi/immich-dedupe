@@ -31,6 +31,9 @@ export function WelcomeScreen() {
           <li>Review duplicate groups already identified by Immich.</li>
           <li>Preview decisions, run dry-runs, execute eligible batches, and view or export batch logs.</li>
           <li>Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.</li>
+          <li>Single-group and batch execution share safety checks, logging, and run/attempt IDs. Overlapping execution or recovery actions are rejected within one API process.</li>
+          <li>Unfinished and uncertain attempts stay quarantined across restarts. In Logs, recheck outcomes and explicitly allow a new attempt only when the pair is still intact and eligible; neither action runs cleanup.</li>
+          <li>Clearing display logs preserves recovery evidence, processed groups, and legacy exclusions.</li>
         </ul>
         <h3>Automatic cleanup requirements</h3>
         <ul>
@@ -42,7 +45,7 @@ export function WelcomeScreen() {
           <li>Manual review displays decisions only. Manual keeper selection, thumbnails, configurable rules, and the dedicated History view are not available.</li>
           <li>Scans examine the first selected number of groups; resumable full-library scanning is not available.</li>
           <li>Album protection covers memberships visible to your configured Immich account. Operations are not transactional and may leave partial changes.</li>
-          <li>Run one batch at a time. Automatic recovery and retry quarantine are not available; investigate uncertain outcomes before retrying.</li>
+          <li>Use one API instance per data directory. Multi-process locking, automatic retry/resumption, rollback, and asset restoration are not available. Other unresolved attempts can still block an explicitly released pair.</li>
         </ul>
       </section>
     </div>

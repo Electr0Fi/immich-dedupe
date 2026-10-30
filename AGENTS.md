@@ -22,7 +22,10 @@ Stack: pnpm workspace, TypeScript, Express 5, `@immich/sdk` 2.7.x, Zod 4, React 
 | `apps/api/src/normalizeDuplicates.ts`, `classifySource.ts` | Shared asset records and source classification |
 | `apps/api/src/enrichWithAssetInfo.ts`, `enrichWithAlbums.ts` | File-size and album enrichment |
 | `apps/api/src/executeDecision.ts` | Single-group guards, album transfer, resolution, verification |
-| `apps/api/src/executePlan.ts` | Sequential batch execution and logging |
+| `apps/api/src/executionService.ts` | Sole production coordinator: locking, scopes, journaling, exclusions, audit, reconciliation |
+| `apps/api/src/executionJournal.ts`, `atomicJson.ts` | Validated versioned run records and durable atomic writes |
+| `apps/api/src/reconcileAttempt.ts` | Read-only recovery assessments |
+| `apps/api/src/executePlan.ts` | Pure executable-decision predicate |
 | `apps/api/src/executionLog.ts` | JSON persistence and processed-group tracking |
 | `apps/web/src/main.tsx`, `App.tsx` | Browser entry point and root component |
 | `apps/web/src/components/` | Application shell, navigation, header, screen selection |
@@ -96,13 +99,13 @@ Main routes: `/health`, `/immich/test`, `/immich/duplicates` and enrichment/debu
 ## Persistence, caches, and current limitations
 
 - The active execution log is **`apps/api/data/execution-log.json`**, selected from `__dirname` in the startup entry point, and ignored by Git. Tracked logs at the repository root and `apps/api/execution-log.json` are unused by the current logger. Do not confuse them or overwrite runtime logs during routine development.
-- Only live entries with `executed`, `resolvedDuplicate`, and `trashedAsset` all true count as processed. Clearing logs also clears this tracking and does not undo Immich changes.
-- Batch execution skips processed IDs, runs sequentially, delays 50 ms after successful/dry-run attempts, and stops after the first failure or uncertainty. Single-group execution bypasses batch logging and processed-ID checks. Plan/status counts do not exclude processed IDs.
+- Recovery authority is `apps/api/data/execution-journal/`, not the display log. Successful journal attempts, verified-resolved assessments, and one-time scoped legacy exclusions protect processed groups. Clearing display logs never clears these or quarantines. Never delete/reset recovery files as a routine fix.
+- Batch execution skips processed IDs, runs sequentially, delays 50 ms after successful/dry-run attempts, and stops after the first failure or uncertainty. Single-group execution uses the same coordinator, logging and exclusion checks. Plan/status counts do not exclude processed IDs.
 - File sizes are cached in an app-scoped map, including nulls, with no expiry. Source flags come from hardcoded path prefixes in `classifySource.ts`, not `libraryId`. Unknown paths cannot qualify. Check these assumptions when diagnosing zero eligible groups.
 - Asset enrichment uses unbounded `Promise.all`; album enrichment reads all visible albums and their full assets on every request. Dedupe refresh independently requests status, plan, and analysis concurrently, repeating this work.
 - Frontend Dedupe caches survive screen changes but are not keyed by scan limit. Refresh after changing limits. Live execution recalculates decisions, rather than executing a saved immutable preview.
-- The logger rewrites the full JSON file synchronously, treats unreadable/invalid JSON as an empty log, and has no schema validation or atomic replacement. There is no execution lock, rollback, transaction, or durable job queue. Failures can follow partial Immich changes.
-- Outcomes distinguish `dry-run`, `succeeded`, `failed` and `needs-verification`, with a failure stage and proposed/confirmed albums. New batch logs/exports include these fields; historical entries remain unchanged. There is still no durable retry quarantine or automatic recovery. Investigate uncertain outcomes before retrying.
+- Display-log reads reject malformed/unreadable files without replacing them. Journal writes validate records, flush a temporary file, atomically rename it and flush the directory (directory fsync required). Invalid/inconsistent/unsupported journals or failed writes disable execution and recovery changes; never treat them as empty history. Failures can follow partial Immich changes; there is still no transaction, rollback or durable background job queue.
+- Outcomes distinguish `dry-run`, `succeeded`, `failed` and `needs-verification`, with a failure stage and proposed/confirmed albums. New batch logs/exports include these fields; historical entries remain unchanged. Unfinished/uncertain attempts remain quarantined by group and selected asset IDs across restarts. Unrelated groups remain usable. Rechecks read Immich and append local evidence only; an intact assessment needs an explicit freshly verified release before a separate new attempt. There is no automatic mutation replay, retry/resumption or restoration.
 - The API has no authentication, unrestricted CORS, and no explicit loopback-only binding. `GET /settings/connection` currently returns the raw Immich key to the browser, contrary to the desired credential-isolation convention. Do not expand credential exposure or place secrets in logs/docs/bundles.
 - Connection saving checks truthiness and writes unquoted values directly to `.env`; it neither fully validates values nor reinitializes runtime configuration.
 - Settings' confirmation toggle works in browser memory only. Other safety controls are disabled placeholders. Performance controls affect component state/diagnostics only, not backend behavior. The displayed cache directory is a placeholder. Reset Local Cache clears only frontend cached scans. Clear Credentials clears only the form, not saved or active credentials.
@@ -117,3 +120,7 @@ PR 1 adds real workspace typechecking and resolves the frontend Hooks/Fast Refre
 Report what changed, which checks actually ran, their results, and any unverified behavior. Do not claim live Immich compatibility or successful trash/album behavior based solely on compilation. Keep this file concise enough for routine loading; keep detailed route descriptions and extended operational explanations in `PROJECT_GUIDE.md`.
 
 App construction must remain free of environment loading, SDK initialization, filesystem access, or listening. Keep those concerns in startup and inject SDK, fetch, log storage, and connection persistence into `createApp`. Keep file-size caches isolated per constructed app.
+
+PR 3 invariants: both production execution routes must use the coordinator. Hold its lock before loading/enrichment and through completion, including after client disconnect. Rechecks, releases and log clearing share this lock; overlapping requests return 409. Only one API instance may use a data directory. Await the durable checkpoint before every mutation; journal failures return 503 with run IDs/available partial results. Keep checkpoint and crash/fault regression coverage when changing execution. App construction remains lazy and side-effect free.
+
+Recovery scope is normalized Immich URL plus current-user ID; identity lookup must succeed, API keys must never be persisted, and legacy import runs once for its original scope. Manual recovery cannot override another unresolved attempt or perform any Immich mutation. Keep the Welcome Current Functionality card, README and project guide aligned with these actual guarantees and remaining limits.

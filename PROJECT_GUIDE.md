@@ -28,8 +28,11 @@ The root README and Welcome page’s Current Functionality card describe the cur
 | `apps/api/src/enrichWithAssetInfo.ts` | Fetch and cache file sizes |
 | `apps/api/src/enrichWithAlbums.ts` | Build asset-to-album membership index |
 | `apps/api/src/executeDecision.ts` | Safety guards, album transfer, duplicate resolution, verification |
-| `apps/api/src/executePlan.ts` | Sequential batch processing, processed-group exclusion, audit logging |
-| `apps/api/src/executionLog.ts` | JSON persistence and successful-execution tracking |
+| `apps/api/src/executePlan.ts` | Pure executable-decision predicate |
+| `apps/api/src/executionService.ts` | Shared coordinator, lock, identity, exclusions, logging, recovery actions |
+| `apps/api/src/executionJournal.ts`, `atomicJson.ts` | Validated, atomic versioned run files and one-time legacy exclusions |
+| `apps/api/src/reconcileAttempt.ts` | Bounded read-only reconciliation |
+| `apps/api/src/executionLog.ts` | Separate display-log persistence; malformed files are preserved and reported |
 | `apps/web/index.html`, `src/main.tsx`, `src/App.tsx` | Browser entry and React root |
 | `apps/web/src/components/` | Shell, header, sidebar, screen selection |
 | `apps/web/src/screens/` | Welcome, Dedupe, History, Logs, Settings |
@@ -131,7 +134,9 @@ The engine is pure and makes no network calls. New rules belong in `packages/rul
 
 `scanLimit` chooses the first N groups from the server response; it is not pagination. `executeLimit` caps attempted eligible groups, including failed attempts and dry-run results. Batch defaults are scan 100 / execute 10; UI defaults are scan 100 / execute 5. Legacy request field `limit` supplies both defaults when provided. Both execution POST bodies are validated with Zod. Supplied limits must be positive safe integers; strings, nulls, zero, negative and fractional limits return HTTP 400. Explicit limits independently override the legacy fallback. Read-only query endpoints retain their existing permissive limit parser.
 
-The executor requires exactly two assets, one external and one internal, an `auto-resolve` decision with confidence 100, one trash ID, distinct keep/trash IDs, and both selected assets present. Batch execution skips group IDs recorded as successful live executions. Decisions and groups are paired by array index.
+Both execution routes use one coordinator, with UUID run/attempt IDs and the same logging/exclusion policy. A lock is acquired before scanning/enrichment and retained until work finishes, even after client disconnect. Other execution requests (including dry-runs), rechecks, releases, and log clears return HTTP 409 while busy. The lock is per API process; multiple instances sharing storage are unsupported.
+
+The executor requires exactly two assets, one external and one internal, an `auto-resolve` decision with confidence 100, one trash ID, distinct keep/trash IDs, and both selected assets present. Batch execution reports exclusions from authoritative journal successes, verified-resolved assessments, legacy exclusions, and quarantines. Quarantine matches group IDs or either selected asset ID; unrelated groups remain usable. Single-group requests for excluded groups return HTTP 409. Decisions are matched by group ID.
 
 Dry-run is the default for both execution routes and internal executors. It rechecks group/asset eligibility and current albums but does not mutate Immich. `proposedAlbumIds` reports proposed transfers; `transferredAlbumIds` stays empty. Batch dry-runs still append local audit entries.
 
@@ -139,11 +144,23 @@ Before either dry-run or live execution, the executor refetches duplicate member
 
 Live execution adds the kept asset to missing loser albums once, requires `success === true`, and rereads affected album details to confirm membership. Existing overlapping keeper memberships are checked too. Only then does it call SDK `resolveDuplicates` (Immich `POST /duplicates/resolve`) once. A nonempty response with successful items and no reported error is required. The loser must be confirmed `isTrashed === true` with `duplicateId === null`, and the keeper must be confirmed untrashed. Verification has at most three rounds, one second apart. Exceptions, 404s and missing fields are never success. Mutations are not retried. Preserve this operation ordering. Do not replace duplicate resolution with Immich `DELETE /duplicates/:id`, which is not the intended asset-cleanup operation.
 
-Batch work is sequential with a fixed 50 ms delay after successful or dry-run attempts. The first failed/uncertain attempt stops processing and returns `stoppedEarly: true` with `stopReason`. Failed attempts still count toward `executeLimit`. An audit-write failure also stops further work while retaining returned results. Successful live entries require `mode === "execute"` and all of `executed`, `resolvedDuplicate`, and `trashedAsset` true to enter processed tracking.
+Batch work is sequential with a fixed 50 ms delay after successful or dry-run attempts. The first failed/uncertain attempt stops processing and returns `stoppedEarly: true` with `stopReason`. Failed attempts still count toward `executeLimit`. An audit-write failure also stops further work while retaining returned results. Once journaled, verified success stays authoritative even if the display log fails. Successful live entries require `mode === "execute"` and all of `executed`, `resolvedDuplicate`, and `trashedAsset` true to enter processed tracking.
 
-The active log is **`apps/api/data/execution-log.json`**, selected in startup relative to `src` or `dist` through `__dirname`. It is ignored by Git. Tracked `execution-log.json` files at the repository root and `apps/api/` are not read by the current logger; the older `src/execution-log.json` location is no longer used. Tests inject a temporary log path. JSON reads/writes are synchronous and rewrite the entire file. Missing or invalid JSON reads as an empty log; there is no schema validation, database, rotation, or atomic replacement.
+The active log is **`apps/api/data/execution-log.json`**, selected in startup relative to `src` or `dist` through `__dirname`. It is ignored by Git. Tracked `execution-log.json` files at the repository root and `apps/api/` are not read by the current logger; the older `src/execution-log.json` location is no longer used. Tests inject a temporary log path. Display-log writes remain synchronous and rewrite the file. Missing files read as empty, but malformed/unreadable logs now raise an error without replacement. They are not the recovery authority.
 
-Clearing logs also clears processed-group tracking; it does not undo Immich operations. The single-group execution route calls the decision executor directly and neither appends batch logs nor checks processed history. Plan and status endpoints count executable rules without excluding processed IDs, whereas batch eligibility excludes them.
+Clearing display logs preserves journal records, completed-history exclusions, quarantines, and legacy exclusions. It does not undo Immich operations. Single-group execution now shares logging and exclusion checks with batch execution. Read-only plan/status counts still describe rule eligibility, while execution returns `excludedGroups` explaining processed/legacy/quarantined candidates.
+
+## Durable recovery evidence
+
+`apps/api/data/execution-journal/` holds one version-1 JSON file per run and a separate `legacy-exclusions.json`. The store loads lazily so app construction stays side-effect free. Records validate IDs, checkpoint order, album requirements, outcomes and scope. Interrupted temporary files are retained but never promoted. Writes flush a same-directory temporary file, rename it atomically, then flush the directory; directory fsync is required (validated on Linux). Filesystem operations are injectable for fault tests.
+
+An attempt is saved before processing. Fresh preflight records include original selections, safety details and loser album requirements. A durable intent must complete before each album-add or resolution call. Subsequent checkpoints capture sanitized responses, confirmed album additions, and each verification round. Terminal results are saved before the separate display-log append. Run completion follows all attempts. No API keys are stored.
+
+The scope is the normalized API origin/path and authenticated current-user ID. Identity lookup must succeed before execution/recovery changes. The first initialization before execution or log clearing copies recorded-success legacy group IDs into a one-time scoped exclusion record without changing the original log. These are labeled legacy exclusions rather than verified attempts; dry-runs are not imported. Changing connections does not repeat migration into a different library. Malformed legacy data prevents migration/clearing rather than silently losing history.
+
+Unfinished or `needs-verification` attempts stay quarantined across restarts. Reconciliation performs bounded reads only: verified resolved requires a trashed/unlinked loser, untrashed keeper, absent original group, and every recorded required album containing the keeper. An intact assessment requires the same eligible pair and original album requirements accounted for on the keeper or loser. All other observations remain inconclusive. Assessments append without rewriting original uncertainty.
+
+An intact assessment does not unblock anything. Explicit release requires `{ "confirm": true }` and another fresh intact check; it appends a release event, never performs cleanup, and cannot override other unresolved attempts sharing assets. A new execution is a separate request. Corrupt/unsupported/inconsistent journals or failed writes disable execution/recovery changes with HTTP 503. A failed checkpoint after work began returns the run ID and partial results. Preserve evidence and repair storage rather than deleting/resetting it. Application/process-failure safeguards do not provide transactional Immich changes or protection from hardware failure/external races.
 
 ## HTTP interface
 
@@ -166,9 +183,13 @@ All routes are defined in `apps/api/src/app.ts`. Importing it does not load envi
 | GET | `/execution/duplicates/:groupId/preview` | Single-group decision and proposed albums |
 | POST | `/execution/duplicates/:groupId` | Single-group run with `{ "dryRun": true }` for simulation |
 | POST | `/execution/run` | Batch `{ scanLimit, executeLimit, dryRun }` |
-| GET | `/execution/log` | Full log, count, filesystem path |
+| GET | `/execution/log` | Display log, count, filesystem path |
+| GET | `/execution/recovery?offset=0&limit=25` | Journal health, active run, scope and paginated unresolved attempts (limit 1–100) |
+| GET | `/execution/recovery/:attemptId` | Full current-scope attempt evidence |
+| POST | `/execution/recovery/:attemptId/recheck` | Read-only Immich reconciliation and local assessment |
+| POST | `/execution/recovery/:attemptId/release` | Explicit confirmed fresh-check release; never cleanup |
 | GET | `/execution/log/export.json`, `/execution/log/export.csv` | Download full log; CSV includes BOM and escaped fields |
-| POST | `/execution/log/clear` | Clear audit and processed tracking |
+| POST | `/execution/log/clear` | Clear display entries only; preserve recovery and exclusions |
 | GET | `/settings/status` | Ping/about-based connection status |
 | GET | `/settings/connection` | Current startup URL and API key |
 | POST | `/settings/connection` | Write `{ immichUrl, apiKey }` to backend `.env` |
@@ -176,7 +197,7 @@ All routes are defined in `apps/api/src/app.ts`. Importing it does not load envi
 
 For both execution POST routes, **omitted `dryRun` defaults to true**. Only literal JSON `false` opts into live execution; strings, nulls and other non-boolean modes return HTTP 400.
 
-`ExecutionResult` adds `outcome` (`dry-run`, `succeeded`, `failed`, `needs-verification`), `failureStage` (preflight, album-transfer, album-verification, resolution, verification), and `proposedAlbumIds`. `executed` is true only on fully verified success. Other booleans represent positive evidence, not inferred success. A submitted mutation followed by ambiguity yields `needs-verification`; confirmed partial transfers remain in `transferredAlbumIds`. Batch logs and JSON/CSV exports include these details. Historical records retain their original shape and display as legacy entries.
+`ExecutionResult` adds `outcome` (`dry-run`, `succeeded`, `failed`, `needs-verification`), `failureStage` (preflight, album-transfer, album-verification, resolution, verification), and `proposedAlbumIds`. `executed` is true only on fully verified success. Other booleans represent positive evidence, not inferred success. A submitted mutation followed by ambiguity yields `needs-verification`; confirmed partial transfers remain in `transferredAlbumIds`. Results and new audit entries include `runId` and `attemptId`. Batch logs and JSON/CSV exports include these details. HTTP 409 represents busy/excluded/release-conflict states, and HTTP 503 can include `partialExecution` for UI display when journal persistence fails. Historical records retain their original shape and display as legacy entries.
 
 Example checks after starting the API:
 
@@ -195,7 +216,7 @@ The shell uses React state for navigation, with no router, URL routes, or persis
 
 Each refresh concurrently requests status, plan, and analysis. Each backend route independently repeats the duplicate/enrichment workflow, including album indexing. Cached file sizes can still trigger duplicate fetches when concurrent requests race on an initially empty cache.
 
-Logs displays the newest 20 entries, with exports covering the full log. History is a static placeholder. The app uses plain CSS; at widths below 900 px, the sidebar disappears with no replacement navigation.
+Logs includes a paginated Execution Recovery panel with evidence, recheck, and confirmed release actions. Unavailable storage/identity and active-run states are explicit, and HTTP error partial results remain visible. The display-log table shows the newest 20 entries, with exports covering the full log. History is a static placeholder. The app uses plain CSS; at widths below 900 px, the sidebar disappears with no replacement navigation.
 
 Settings implementation details:
 
@@ -217,8 +238,8 @@ Automatic cleanup is limited to exactly two unlinked images: keep a larger exter
 Remaining operational limits:
 
 - Album preservation covers memberships visible to the configured account. Separate API calls are not transactional; external changes can occur between checks and partial changes can remain after failures.
-- There is no execution lock, durable journal, retry quarantine, automatic reconciliation or recovery. Run one batch at a time and investigate uncertain outcomes before retrying. These facilities remain reserved for later work.
-- Single-group execution still bypasses batch logging/processed tracking. Clearing batch logs clears successful-history tracking, not Immich operations. JSON logging remains synchronous and non-atomic.
+- Execution/recovery locking covers one API process only. Durable quarantine and manual recheck/release are implemented; multi-process locking, automatic retry/resumption, rollback, and restoration are not.
+- Single-group and batch executions now share logging and exclusions. Display logs can be cleared independently of recovery evidence. JSON journal storage is not a multi-process database.
 - Preview caches remain app-scoped and without expiry. Execution uses fresh data, but previews can become stale. Path classification is still hardcoded.
 - The local API is unauthenticated, permits cross-origin requests, does not explicitly bind only to loopback, and returns the saved key through connection settings. Keep it within a trusted local environment.
 - Connection saving checks truthiness, writes unquoted `.env` values, and requires an API restart. Clear Credentials clears the form only. Most preference/performance controls remain placeholders.
@@ -234,7 +255,7 @@ pnpm lint
 pnpm build
 ```
 
-`pnpm test` runs `apps/api/tests/*.test.ts` with Node’s built-in runner and the existing API-local `tsx` loader. Coverage includes rules, execution ordering and guards, batch attempts and history, isolated log storage, and representative HTTP/settings/export paths. HTTP tests use an ephemeral loopback server and fake Immich/fetch/settings dependencies; no real credentials are needed. The previous TODO safety cases are now executable regression tests. Tests cover protected/unknown metadata, stale selections, fresh albums, malformed/unsuccessful responses, partial results, bounded verification, safe defaults and batch stopping.
+`pnpm test` runs `apps/api/tests/*.test.ts` with Node’s built-in runner and the existing API-local `tsx` loader. Coverage includes rules, execution ordering and guards, batch attempts and history, isolated log storage, and representative HTTP/settings/export paths. HTTP tests use an ephemeral loopback server and fake Immich/fetch/settings dependencies; no real credentials are needed. The previous TODO safety cases are now executable regression tests. PR 3 adds interruption/restart checks at every checkpoint boundary, injected write/flush failures, legacy migration, scope isolation, quarantine/release, and client-disconnect coverage using temporary state. Tests cover protected/unknown metadata, stale selections, fresh albums, malformed/unsuccessful responses, partial results, bounded verification, safe defaults and batch stopping.
 
 `pnpm build` compiles the frontend into `apps/web/dist` and the API into `apps/api/dist`. Build success does not establish a production runtime: there is no API `start` script or frontend static serving in Express, and the shared packages expose `.ts` source. Plain `node apps/api/dist/index.js` deployment was not validated. `pnpm --filter web preview` previews the built frontend only and still needs the API.
 

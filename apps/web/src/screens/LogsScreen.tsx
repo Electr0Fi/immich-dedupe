@@ -1,3 +1,4 @@
+import { RecoveryPanel } from '../components/RecoveryPanel';
 import { useEffect, useRef, useState } from 'react';
 import {
   clearExecutionLog,
@@ -23,7 +24,7 @@ export function LogsScreen() {
 
   async function handleClearLog() {
     const confirmed = window.confirm(
-      'Clear the execution log? This removes audit entries and processed-history tracking from the app.'
+      'Clear display log entries only? Recovery evidence, processed groups, legacy exclusions and quarantines will be preserved.'
     );
     if (!confirmed) return;
 
@@ -67,6 +68,8 @@ export function LogsScreen() {
         <p>Audit trail of all execution operations.</p>
       </header>
 
+      <RecoveryPanel />
+
       <section className="card">
         <h2>Execution Log</h2>
 
@@ -107,7 +110,7 @@ export function LogsScreen() {
                 .map((entry, index) => (
                   <tr key={`${entry.timestamp}-${entry.groupId}-${index}`}>
                     <td>{entry.timestamp}</td>
-                    <td>{entry.groupId}</td>
+                    <td>{entry.groupId}{entry.runId && <small className="attempt-identifier">Run: {entry.runId}</small>}{entry.attemptId && <small className="attempt-identifier">Attempt: {entry.attemptId}</small>}</td>
                     <td>{entry.mode}</td>
                     <td>{entry.outcome === 'needs-verification' ? 'Needs verification' : entry.outcome ?? 'Legacy record'}</td>
                     <td>{entry.failureStage ?? '—'}</td>

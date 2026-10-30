@@ -79,3 +79,5 @@ pnpm lint                       # Frontend ESLint only
 
 <!-- Template taken from https://www.gradually.ai/en/claude-md/ -->
 - App factory: `apps/api/src/app.ts`; production startup: `apps/api/src/index.ts`. Inject dependencies for tests; never initialize the real SDK or touch production logs in tests.
+
+- Both execution routes use `executionService.ts`; persist checkpoints before mutations. Recovery authority lives under `apps/api/data/execution-journal/` and is never cleared with display logs. Recheck/release only read Immich. Locking supports one API process per data directory; automatic retries/restoration remain unsupported.
