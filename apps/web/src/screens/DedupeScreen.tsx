@@ -145,6 +145,9 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         </div>
 
         <div className="buttonRow">
+          <button disabled={buttonsDisabled} onClick={refresh}>
+            Refresh previews
+          </button>
           <button disabled={buttonsDisabled} onClick={handlePrepare}>
             Prepare review
           </button>
@@ -160,7 +163,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
           {activityMessage && <><span className="spinner" aria-hidden="true" /><span>{activityMessage}</span></>}
         </div>
 
-        {error && <p className="error" role="alert">Preview refresh failed: {error}. Execution results below are preserved.</p>}
+        {error && <p className="error" role="alert">Preview refresh failed: {error}. Use Refresh previews to try again. Execution results below are preserved.</p>}
       </section>
 
       <section className="card">

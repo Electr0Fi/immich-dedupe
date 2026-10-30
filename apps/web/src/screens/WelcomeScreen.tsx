@@ -35,6 +35,7 @@ export function WelcomeScreen() {
           <li>Unfinished and uncertain attempts stay quarantined across restarts. In Logs, recheck outcomes and explicitly allow a new attempt only when the pair is still intact and eligible; neither action runs cleanup.</li>
           <li>Clearing display logs preserves recovery evidence, processed groups, and legacy exclusions.</li>
           <li>Dedupe explains verified, simulated, failed, and uncertain outcomes with hover/focus definitions, expandable details, and links to recovery. The latest saved run for the current account is restored when Dedupe opens; refresh to see newer evidence.</li>
+          <li>Refresh previews independently of the reviewed selection and execution results. Connection failures include API access guidance and can be retried with Refresh previews.</li>
         </ul>
         <h3>Automatic cleanup requirements</h3>
         <ul>

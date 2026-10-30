@@ -218,6 +218,8 @@ The shell uses React state for navigation, with no router, URL routes, or persis
 
 Each refresh concurrently requests status, plan, and analysis. Each backend route independently repeats the duplicate/enrichment workflow, including album indexing. Cached file sizes can still trigger duplicate fetches when concurrent requests race on an initially empty cache.
 
+Controls includes an explicit Refresh previews action to recover from a failed preview request without rebuilding the review, changing its selection/approval or rerunning execution. GET transport failures explain that the Dedupe API must be running and accessible from the browser; HTTP errors retain their status and server message. Preview errors clear on a successful refresh, and execution results remain visible. There are no automatic retries; a lost execution response still has an unknown outcome. With the default `http://localhost:3001` API URL, a remote browser must instead be configured with a backend URL it can reach; an HTTPS frontend also requires a browser-accessible HTTPS API.
+
 Logs includes a paginated Execution Recovery panel with evidence, recheck, and confirmed release actions. Unavailable storage/identity and active-run states are explicit, and HTTP error partial results remain visible. The display-log table shows the newest 20 entries, with exports covering the full log. History is a static placeholder. The app uses plain CSS; at widths below 900 px, navigation becomes a horizontal scrolling bar.
 
 Settings implementation details:

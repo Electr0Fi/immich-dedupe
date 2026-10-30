@@ -15,6 +15,7 @@ A local React/Express application for reviewing duplicate groups already identif
 - Inspect recovery evidence in Logs, recheck outcomes without changing Immich, and explicitly allow a new attempt only after another fresh intact-pair check. Release does not run cleanup or override other quarantines.
 - Clear display log entries without deleting recovery evidence, processed groups, or legacy exclusions.
 - Read outcome summaries with hover/focus definitions, expandable technical details, and links to recovery. Dedupe restores the latest saved run for the current account when opened; use Refresh latest to check newer runs, including those from other tabs.
+- Refresh duplicate previews independently of the reviewed selection and execution results. Connection failures explain how to check API access; use Refresh previews to retry after restoring connectivity.
 
 ### Automatic cleanup requirements
 

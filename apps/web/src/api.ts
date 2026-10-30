@@ -32,7 +32,13 @@ async function readResponse<T>(response: Response): Promise<T> {
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  return readResponse<T>(await fetch(`${API_BASE_URL}${path}`));
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`);
+  } catch {
+    throw new Error('Cannot reach the Dedupe API. Check that the API is running and accessible from this browser, then try again');
+  }
+  return readResponse<T>(response);
 }
 
 async function apiPost<T>(path: string, body: unknown): Promise<T> {

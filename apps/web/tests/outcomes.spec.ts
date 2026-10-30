@@ -119,6 +119,42 @@ test('dry-run results stay visible when the subsequent preview refresh fails', a
   await expect(page.getByRole('alert').filter({ hasText: 'Preview refresh failed' })).toBeVisible();
 });
 
+test('preview network failures can be retried without repeating execution or losing review approval', async ({ page }) => {
+  const state = await fakeApi(page, null); await openDedupe(page);
+  state.latest = runView();
+  let disconnected = true;
+  await page.route('**/execution/status?*', (route) => disconnected ? route.abort('failed') : route.fallback());
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  const alert = page.getByRole('alert').filter({ hasText: 'Preview refresh failed' });
+  await expect(alert).toContainText('Cannot reach the Dedupe API');
+  await expect(alert).toContainText('Use Refresh previews to try again');
+  await expect(summary(page).locator('dl.stats > div').filter({ hasText: 'Simulated' }).locator('dd')).toHaveText('1');
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeEnabled();
+  const posts = state.calls.filter((call) => call.startsWith('POST'));
+  disconnected = false;
+  await page.getByRole('button', { name: 'Refresh previews', exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: 'Include group photos', exact: true })).toBeChecked();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeEnabled();
+  await expect(summary(page).locator('dl.stats > div').filter({ hasText: 'Simulated' }).locator('dd')).toHaveText('1');
+  expect(state.calls.filter((call) => call.startsWith('POST'))).toEqual(posts);
+});
+
+test('an initial preview connection failure recovers with an explicit refresh', async ({ page }) => {
+  const state = await fakeApi(page);
+  let disconnected = true;
+  await page.route('**/execution/status?*', (route) => disconnected ? route.abort('failed') : route.fallback());
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  const alert = page.getByRole('alert').filter({ hasText: 'Preview refresh failed' });
+  await expect(alert).toContainText('Cannot reach the Dedupe API');
+  disconnected = false;
+  await page.getByRole('button', { name: 'Refresh previews', exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Status', exact: true }).locator('..')).toContainText('Total Duplicates');
+  expect(state.calls.filter((call) => call.startsWith('POST'))).toEqual([]);
+});
+
 test('an in-flight request and its response survive navigation', async ({ page }) => {
   const state = await fakeApi(page); await openDedupe(page);
   let finish!: (route: Route) => Promise<void>;
