@@ -604,6 +604,40 @@ input[type='checkbox'] {
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   margin-top: 16px;
 }
+.outcome-stat { position: relative; }
+.outcome-stat dt { padding-right: 24px; }
+.outcome-info {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  color: #5a6475;
+  font-family: Georgia, serif;
+  font-weight: 700;
+  font-style: italic;
+  cursor: help;
+}
+.outcome-tooltip {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #172033;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  box-shadow: 0 4px 12px rgba(22, 32, 51, 0.2);
+}
 .run-attempt { border-top: 1px solid #dde2ea; margin-top: 18px; padding-top: 12px; }
 .run-attempt h3 { font-size: 14px; }
 .result-details dd { font-size: 13px; font-weight: 400; overflow-wrap: anywhere; margin-bottom: 12px; }

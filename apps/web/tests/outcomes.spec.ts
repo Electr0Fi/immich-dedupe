@@ -72,6 +72,15 @@ function summary(page: Page) { return page.getByRole('region', { name: 'Latest r
 test('summary counts, exclusions and keyboard details explain outcomes; restoration survives navigation and reload', async ({ page }) => {
   const state = await fakeApi(page, runView('succeeded')); await openDedupe(page);
   await expect(summary(page).getByText('Verified completed', { exact: true })).toBeVisible();
+  const info = page.getByRole('button', { name: 'About Verified completed', exact: true });
+  await info.hover();
+  await expect(page.getByRole('tooltip')).toHaveText('Album preservation and resolution were confirmed.');
+  await page.getByRole('heading', { name: 'Dedupe', exact: true }).hover();
+  await expect(page.getByRole('tooltip')).toHaveCount(0);
+  await info.focus();
+  await expect(page.getByRole('tooltip')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('tooltip')).toHaveCount(0);
   await expect(summary(page).locator('dl.stats > div').filter({ hasText: 'Verified completed' }).locator('dd')).toHaveText('1');
   const details = page.getByText('Technical details for group photos', { exact: true });
   await details.focus(); await page.keyboard.press('Enter');

@@ -1,6 +1,32 @@
+import { useId, useState } from 'react';
 import type { ExecutionState } from '../useExecution';
 
 const outcomeLabels = { succeeded: 'Verified completed', 'dry-run': 'Simulated', failed: 'Failed', 'needs-verification': 'Needs verification' };
+const outcomeDefinitions: Record<string, string> = {
+  succeeded: 'Album preservation and resolution were confirmed.',
+  'dry-run': 'No Immich mutations were made. The proposed changes were simulated.',
+  failed: 'Checks stopped the attempt before any Immich mutation.',
+  'needs-verification': 'Changes may have occurred, but the outcome could not be fully confirmed. Review recovery before retrying.',
+};
+
+function OutcomeStat({ label, value, definition }: { label: string; value: string | number; definition: string }) {
+  const [open, setOpen] = useState(false);
+  const tooltipId = useId();
+  return <div className="outcome-stat" onMouseLeave={(event) => {
+    if (!event.currentTarget.contains(event.currentTarget.ownerDocument.activeElement)) setOpen(false);
+  }}>
+    <dt><span>{label}</span>
+      <button type="button" className="outcome-info" aria-label={`About ${label}`}
+        aria-describedby={open ? tooltipId : undefined}
+        onMouseEnter={() => setOpen(true)} onFocus={() => setOpen(true)} onClick={() => setOpen(true)}
+        onBlur={() => setOpen(false)} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false); }}>
+        <span aria-hidden="true">i</span>
+      </button>
+      {open && <span id={tooltipId} role="tooltip" className="outcome-tooltip">{definition}</span>}
+    </dt>
+    <dd>{value}</dd>
+  </div>;
+}
 const stageLabels: Record<string, string> = {
   preflight: 'Fresh safety checks', 'album-transfer': 'Adding keeper to albums', 'album-verification': 'Confirming album preservation',
   resolution: 'Resolving the duplicate', verification: 'Verifying the result', prepared: 'Attempt recorded',
@@ -28,11 +54,13 @@ export function ExecutionResults({ execution, onReviewRecovery }: { execution: E
       {run.phase === 'interrupted' && <p className="error">The run has no recorded completion. Its outcome may be incomplete; review recovery before retrying.</p>}
       <p className="run-identifier">Run: {run.runId} · Started: {run.startedAt}</p>
       <dl className="stats outcome-summary">
-        {Object.entries(outcomeLabels).map(([outcome, label]) => <div key={outcome}><dt>{label}</dt><dd>{results.filter((r) => r.outcome === outcome).length}</dd></div>)}
-        <div><dt>Awaiting recorded result</dt><dd>{run.attempts.filter((a) => !a.result).length}</dd></div>
-        <div><dt>Excluded</dt><dd>{run.report ? excluded.length : 'Not recorded'}</dd></div>
+        {Object.entries(outcomeLabels).map(([outcome, label]) => <OutcomeStat key={outcome} label={label}
+          value={results.filter((r) => r.outcome === outcome).length} definition={outcomeDefinitions[outcome]} />)}
+        <OutcomeStat label="Awaiting recorded result" value={run.attempts.filter((a) => !a.result).length}
+          definition="No terminal result has been saved for these attempts. The run may still be active or may have been interrupted." />
+        <OutcomeStat label="Excluded" value={run.report ? excluded.length : 'Not recorded'}
+          definition="Groups omitted because they were already processed, covered by legacy evidence, or quarantined. Older records may not include this count." />
       </dl>
-      <p>Verified completed means album preservation and resolution were confirmed. Simulated means no Immich mutations were made. Failed means checks stopped the attempt before mutation; needs verification means changes may have occurred.</p>
       <p>Scanned: {run.report?.fetchedGroups ?? 'Not recorded'} · Eligible: {run.report?.eligibleCount ?? 'Not recorded'} · Scan limit: {run.context?.scanLimit ?? 'Not recorded'} · Attempt limit: {run.context?.executeLimit ?? 'Not recorded'}</p>
       {!run.context && <p>Older journal record: request settings, exclusion totals, and stop details were not recorded.</p>}
       {run.report?.stoppedEarly && <p className="error" role="alert">Batch stopped: {run.report.stopReason}</p>}
