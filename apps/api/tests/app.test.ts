@@ -354,3 +354,66 @@ test('review endpoints validate bodies, require exact dry-run approval, and rest
   time += 900000; assert.equal((await fetch(`${base}${thumbnail}`)).status, 410);
   assert.equal((await post(endpoint, { selectedGroupIds: ['one'] })).status, 410);
 });
+
+test('preparation streams progress before completion and accepts cancellation while locked', async (t) => {
+  const h = executionHarness('one');
+  let release!: () => void, entered!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  h.client.getAllAlbums = async () => { entered(); await wait; return []; };
+  const base = await serve(t, dependencies(t, { immich: h.client }));
+  const response = await fetch(`${base}/execution/plans`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: '{}' });
+  assert.equal(response.headers.get('content-type'), 'application/x-ndjson');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const reader = response.body!.getReader(), decoder = new TextDecoder();
+  const first = decoder.decode((await reader.read()).value);
+  const event = JSON.parse(first.split('\n')[0]);
+  assert.equal(event.type, 'progress');
+  await started;
+  const cancel = await fetch(`${base}/execution/preparations/${event.progress.preparationId}/cancel`, { method: 'POST' });
+  assert.equal(cancel.status, 200); assert.equal((await cancel.json()).status, 'cancelling');
+  const busy = await fetch(`${base}/execution/plans`, { method: 'POST', headers: { Accept: 'application/x-ndjson' } });
+  assert.equal(busy.status, 409);
+  release();
+  let text = first;
+  for (;;) { const { value, done } = await reader.read(); if (done) break; text += decoder.decode(value); }
+  const events = text.trim().split('\n').map((line) => JSON.parse(line));
+  const terminal = events.at(-1);
+  assert.equal(terminal.type, 'result'); assert.equal(terminal.result.status, 'cancelled');
+  assert.equal(terminal.result.plan.candidates.length, 0); assert.equal(terminal.result.plan.fetchedGroups, 0);
+  assert.deepEqual(h.mutations, []);
+  assert.equal((await fetch(`${base}/execution/preparations/invalid/cancel`, { method: 'POST' })).status, 400);
+  assert.equal((await fetch(`${base}/execution/preparations/00000000-0000-4000-8000-000000000001/cancel`, { method: 'POST' })).status, 404);
+});
+
+test('streamed preparation errors are terminal, sanitized and do not create a plan', async (t) => {
+  const h = executionHarness('one'); h.client.getAssetDuplicates = async () => { throw new Error('private SDK connection details'); };
+  const base = await serve(t, dependencies(t, { immich: h.client }));
+  const response = await fetch(`${base}/execution/plans`, { method: 'POST', headers: { Accept: 'application/x-ndjson' } });
+  const text = await response.text();
+  assert.equal(text.includes('private SDK'), false);
+  const events = text.trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(events.at(-1).type, 'error'); assert.equal(events.some((event) => event.type === 'result'), false);
+  assert.deepEqual(h.mutations, []);
+});
+
+test('disconnecting a preparation stream leaves its work and lock active until reads settle', async (t) => {
+  const h = executionHarness('one');
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  h.client.getAllAlbums = async () => { entered(); await wait; return []; };
+  const base = await serve(t, dependencies(t, { immich: h.client }));
+  const response = await fetch(`${base}/execution/plans`, { method: 'POST', headers: { Accept: 'application/x-ndjson' } });
+  await started;
+  await response.body!.cancel();
+  assert.equal((await fetch(`${base}/execution/plans`, { method: 'POST' })).status, 409);
+  release();
+  let status = 409;
+  for (let i = 0; i < 150 && status === 409; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const next = await fetch(`${base}/execution/plans`, { method: 'POST' });
+    status = next.status; await next.arrayBuffer();
+  }
+  assert.equal(status, 200); assert.deepEqual(h.mutations, []);
+});

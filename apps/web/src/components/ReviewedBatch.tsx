@@ -6,7 +6,7 @@ function AssetComparison({ asset, planId, keeper }: { asset: ReviewedAsset; plan
   const [failed, setFailed] = useState(false);
   return <section className="review-asset" aria-label={`${keeper ? 'Keep' : 'Move to trash'}: ${asset.fileName}`}>
     <h4>{keeper ? 'Keep' : 'Move to trash'}</h4>
-    {failed ? <div className="thumbnail-placeholder" role="img" aria-label={`Thumbnail unavailable for ${asset.fileName}`}>Thumbnail unavailable. Check Immich image access permissions.</div>
+    {failed ? <div className="thumbnail-placeholder" role="img" aria-label={`Thumbnail unavailable for ${asset.fileName}`}>Thumbnail unavailable. Check asset.view permission and image availability in Immich, then prepare a new review. See Settings for required API key permissions.</div>
       : <img className="review-thumbnail" loading="lazy" src={getReviewedThumbnailUrl(planId, asset.id)} alt={`${keeper ? 'Keeper' : 'Loser'} preview: ${asset.fileName}`} onError={() => setFailed(true)} />}
     <p><strong>{asset.fileName}</strong></p>
     <dl className="asset-facts">
@@ -37,7 +37,7 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
         <button disabled={disabled} onClick={() => execution.selectGroups(review.candidates.slice(0, review.executeLimit).map((c) => c.groupId))}>Select first {review.executeLimit}</button>
         <button disabled={disabled} onClick={() => execution.selectGroups([])}>Clear selection</button>
       </div>
-      {review.candidates.length === 0 && <p>No eligible groups in this scan window.</p>}
+      {review.candidates.length === 0 && <p>No eligible groups among the checked groups.</p>}
       {review.candidates.map((candidate) => <article key={`${review.planId}-${candidate.groupId}`} className="review-candidate">
         <label className="review-selection"><input type="checkbox" aria-label={`Include group ${candidate.groupId}`}
           checked={selected.includes(candidate.groupId)} disabled={disabled || (!selected.includes(candidate.groupId) && selected.length >= review.executeLimit)}

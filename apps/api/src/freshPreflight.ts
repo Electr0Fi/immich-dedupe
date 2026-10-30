@@ -23,20 +23,36 @@ export class PreflightSafetyError extends Error {}
 export type PreflightClient = Pick<ImmichClient, "getAssetDuplicates" | "getAssetInfo" | "getAllAlbums">;
 
 /** Fresh, uncached reads shared by legacy execution and immutable reviews. Never mutates Immich. */
-export async function readFreshPreflight(client: PreflightClient, groupId: string, selection?: { keepId: string; trashId: string }) {
+export async function readFreshPreflight(client: PreflightClient, groupId: string, selection?: { keepId: string; trashId: string }, preparation?: {
+  checkCancelled: () => void;
+  stage: (stage: "checking-membership" | "checking-assets" | "checking-albums") => void;
+}) {
+  async function reads<T>(pending: Promise<T>[]): Promise<T[]> {
+    if (!preparation) return Promise.all(pending);
+    const settled = await Promise.allSettled(pending);
+    return settled.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
+  }
+  preparation?.checkCancelled();
+  preparation?.stage("checking-membership");
   const memberships = groupListSchema.parse(await client.getAssetDuplicates({}));
+  preparation?.checkCancelled();
   const matches = memberships.filter((item) => item.duplicateId === groupId);
   if (matches.length !== 1 || matches[0].assets.length !== 2 || new Set(matches[0].assets.map((asset) => asset.id)).size !== 2 ||
       (selection && ![selection.keepId, selection.trashId].every((id) => matches[0].assets.some((a) => a.id === id)))) {
     throw new PreflightSafetyError("Safety guard failed: duplicate group membership changed");
   }
   const ids = selection ? [selection.keepId, selection.trashId] : matches[0].assets.map((a) => a.id);
-  const freshAssets = await Promise.all(ids.map(async (id) => {
+  preparation?.stage("checking-assets");
+  const freshAssets = await reads(ids.map(async (id) => {
     const parsed = assetSchema.safeParse(await client.getAssetInfo({ id }));
     if (!parsed.success) throw new PreflightSafetyError("Invalid or incomplete response during preflight");
     if (parsed.data.id !== id || parsed.data.duplicateId !== groupId) throw new PreflightSafetyError("Safety guard failed: asset membership changed");
     return parsed.data;
   }));
+  preparation?.checkCancelled();
   const group = normalizeDuplicates([{ duplicateId: groupId, assets: freshAssets }]).groups[0];
   group.assets.forEach((asset, index) => {
     const value = freshAssets[index].exifInfo?.fileSizeInByte;
@@ -48,7 +64,7 @@ export async function readFreshPreflight(client: PreflightClient, groupId: strin
     throw new PreflightSafetyError("Safety guard failed: fresh asset details no longer support the selected resolution");
   }
   async function albumsFor(assetId: string) {
-    const lists = await Promise.all([client.getAllAlbums({ assetId }), client.getAllAlbums({ assetId, shared: true })]);
+    const lists = await reads([client.getAllAlbums({ assetId }), client.getAllAlbums({ assetId, shared: true })]);
     const entries = lists.flatMap((list) => albumListSchema.parse(list));
     const map = new Map<string, { id: string; albumName: string }>();
     for (const entry of entries) {
@@ -58,7 +74,9 @@ export async function readFreshPreflight(client: PreflightClient, groupId: strin
     return [...map.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
   const keepId = decision.keepAssetId, trashId = decision.trashAssetIds[0];
-  const [keepAlbums, trashAlbums] = await Promise.all([albumsFor(keepId), albumsFor(trashId)]);
+  preparation?.stage("checking-albums");
+  const [keepAlbums, trashAlbums] = await reads([albumsFor(keepId), albumsFor(trashId)]);
+  preparation?.checkCancelled();
   for (const asset of group.assets) asset.albums = (asset.id === keepId ? keepAlbums : trashAlbums).map((a) => ({ albumId: a.id, albumName: a.albumName }));
   const keepIds = new Set(keepAlbums.map((a) => a.id));
   return { group, decision, requiredAlbumIds: trashAlbums.map((a) => a.id),

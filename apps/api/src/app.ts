@@ -11,6 +11,7 @@ import type {
   DuplicateDecision,
   DuplicateGroup,
   ExecutionPlanItem,
+  ReviewPreparationEvent,
 } from "@immich-dedupe/shared";
 import { createExecutionService, ExecutionServiceError } from "./executionService";
 import type { ExecutionJournal } from "./executionJournal";
@@ -596,7 +597,36 @@ export function createApp(dependencies: AppDependencies) {
   app.post("/execution/plans", async (req, res) => {
     const parsed = CreatePlanSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid review limits" });
+    if (req.get("Accept")?.includes("application/x-ndjson")) {
+      function send(event: ReviewPreparationEvent) {
+        if (res.destroyed || res.writableEnded) return;
+        if (!res.headersSent) {
+          res.status(200).set({ "Content-Type": "application/x-ndjson", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+          res.flushHeaders();
+        }
+        // Skip intermediate updates for a slow reader, but always deliver the terminal event.
+        if (event.type !== "progress" || !res.writableNeedDrain) res.write(`${JSON.stringify(event)}\n`);
+      }
+      try {
+        const result = await execution.preparePlanStream(parsed.data, (progress) => send({ type: "progress", progress }));
+        send({ type: "result", result });
+      } catch (error) {
+        const known = error instanceof ExecutionServiceError;
+        const status = known ? error.status : 503;
+        const code = known ? error.code : "preparation_unavailable";
+        const message = known && code !== "execution_error" ? error.message : "Review preparation failed; fresh Immich data could not be verified";
+        if (!res.headersSent && !res.destroyed) return res.status(status).json({ ok: false, code, error: message });
+        send({ type: "error", status, code, error: message });
+      }
+      if (!res.destroyed) res.end();
+      return;
+    }
     try { res.json(await execution.preparePlan(parsed.data)); } catch (error) { executionError(res, error); }
+  });
+  app.post("/execution/preparations/:preparationId/cancel", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!z.string().uuid().safeParse(req.params.preparationId).success) return res.status(400).json({ ok: false, error: "Invalid preparation ID" });
+    try { res.json(execution.cancelPreparation(req.params.preparationId)); } catch (error) { executionError(res, error); }
   });
   app.post("/execution/plans/:planId/run", async (req, res) => {
     const parsed = ReviewedRunSchema.safeParse(req.body);

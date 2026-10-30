@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { DuplicateGroup, DuplicateDecision, ExecutionResult, ExecutionScope, ExecutionExclusion, RecoveryAttempt, RunView, RunViewResponse, RunReport, ReviewedRunEvidence, ReviewedCandidate, ReviewedPlanExclusion, ChangedPlanGroup } from "@immich-dedupe/shared";
+import type { DuplicateGroup, DuplicateDecision, ExecutionResult, ExecutionScope, ExecutionExclusion, RecoveryAttempt, RunView, RunViewResponse, RunReport, ReviewedRunEvidence, ReviewedCandidate, ReviewedPlanExclusion, ChangedPlanGroup, ReviewPreparationProgress, ReviewPreparationStage, ReviewPreparationResult } from "@immich-dedupe/shared";
 import { createDecisionExecutor, CheckpointFailure } from "./executeDecision";
 import { isExecutableDecision } from "./executePlan";
 import { JournalError, isUnresolved, sameScope, type ExecutionJournal } from "./executionJournal";
@@ -14,6 +14,7 @@ export class ExecutionServiceError extends Error {
   constructor(public status: number, public code: string, message: string, public details: Record<string, unknown> = {}) { super(message); }
 }
 export type ExecutionOptions = { dryRun: boolean; scanLimit: number; executeLimit: number; singleGroupId?: string };
+class PreparationCancelled extends Error {}
 type LoadedGroups = { groups: DuplicateGroup[]; decisions: DuplicateDecision[] };
 
 export function normalizeApiUrl(value: string) {
@@ -27,6 +28,7 @@ export function createExecutionService(deps: {
   const { client, journal, log } = deps;
   const now = deps.now ?? Date.now;
   const plans = createReviewedPlanStore(now);
+  const preparations = new Map<string, { cancelled: boolean; finished: boolean; updatedAt: number }>();
   let activeRunId: string | null = null;
   let lastScope: ExecutionScope | null = null;
   async function identity(): Promise<ExecutionScope> {
@@ -48,12 +50,15 @@ export function createExecutionService(deps: {
       throw new ExecutionServiceError(503, "identity_unavailable", `Cannot verify the Immich connection identity. ${reason} No execution or recovery changes were performed.`);
     }
   }
-  async function exclusive<T>(action: (runId: string, scope: ExecutionScope) => Promise<T>): Promise<T> {
+  async function exclusive<T>(action: (runId: string, scope: ExecutionScope) => Promise<T>, onStage?: (stage: "checking-history" | "checking-identity") => void): Promise<T> {
     if (activeRunId) throw new ExecutionServiceError(409, "execution_busy", "Another execution or recovery action is running", { activeRunId });
     const runId = randomUUID(); activeRunId = runId;
     try {
+      onStage?.("checking-history");
       journal.initialize();
+      onStage?.("checking-identity");
       const scope = await identity();
+      onStage?.("checking-history");
       journal.migrate(scope, log.loadExecutionLog);
       return await action(runId, scope);
     } catch (error) {
@@ -227,36 +232,81 @@ export function createExecutionService(deps: {
     }
     return changedGroups;
   }
+  async function prepareReview(options: { scanLimit: number; executeLimit: number }, onProgress?: (progress: ReviewPreparationProgress) => void): Promise<ReviewPreparationResult> {
+    const preparationId = randomUUID();
+    const state = { cancelled: false, finished: false, updatedAt: now() };
+    let checkedGroups = 0, targetGroups: number | null = null;
+    const candidates: ReviewedCandidate[] = [], excludedGroups: ReviewedPlanExclusion[] = [];
+    function progress(stage: ReviewPreparationStage) {
+      // Reporting is observational: a disconnected/failed consumer cannot stop the coordinator.
+      try { onProgress?.({ preparationId, stage, checkedGroups, targetGroups, eligibleGroups: candidates.length, excludedGroups: excludedGroups.length }); } catch { /* Ignore observer failures. */ }
+    }
+    function checkCancelled() { if (state.cancelled) throw new PreparationCancelled(); }
+    return exclusive(async (_, scope) => {
+      const parsed = z.object({ scanLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), executeLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).safeParse(options);
+      if (!parsed.success) throw new ExecutionServiceError(400, "invalid_plan", "Invalid review limits");
+      let totalGroups = 0;
+      try {
+        checkCancelled();
+        progress("fetching-groups");
+        const groups = groupListSchema.parse(await client.getAssetDuplicates({}));
+        if (new Set(groups.map((g) => g.duplicateId)).size !== groups.length) throw new ExecutionServiceError(503, "preflight_unavailable", "Duplicate group information is inconsistent");
+        const selected = groups.slice(0, options.scanLimit);
+        totalGroups = groups.length; targetGroups = selected.length;
+        checkCancelled();
+        const index = journal.exclusionIndex(scope);
+        for (const group of selected) {
+          checkCancelled();
+          progress("checking-membership");
+          const excluded = exclusions(index, { groupId: group.duplicateId, assets: group.assets });
+          if (excluded) excludedGroups.push({ ...excluded, message: `Excluded: ${excluded.reason}` });
+          else {
+            try {
+              const fresh = await readFreshPreflight(client, group.duplicateId, undefined, { checkCancelled, stage: progress });
+              const candidate = reviewedCandidate(fresh);
+              reviewedCandidateSchema.parse(candidate);
+              checkCancelled();
+              candidates.push(candidate);
+            } catch (error) {
+              if (error instanceof PreparationCancelled) throw error;
+              if (!(error instanceof PreflightSafetyError)) throw new ExecutionServiceError(503, "preflight_unavailable", "Fresh Immich data could not be verified; no review was prepared");
+              checkCancelled();
+              excludedGroups.push({ groupId: group.duplicateId, reason: "ineligible", message: error.message, attemptIds: [] });
+            }
+          }
+          checkedGroups++;
+          progress("checking-membership");
+        }
+      } catch (error) { if (!(error instanceof PreparationCancelled)) throw error; }
+      const status = state.cancelled ? "cancelled" as const : "completed" as const;
+      progress("finalizing");
+      const plan = targetGroups === null ? null : plans.put({ scope, ...options, fetchedGroups: checkedGroups, totalGroups, candidates, excludedGroups,
+        preparation: { status, checkedGroups, targetGroups } });
+      return { status, plan };
+    }, (stage) => {
+      if (!preparations.has(preparationId)) {
+        for (const [id, entry] of preparations) if (entry.finished && now() - entry.updatedAt >= 15 * 60 * 1000) preparations.delete(id);
+        while (preparations.size >= 20) preparations.delete(preparations.keys().next().value!);
+        preparations.set(preparationId, state);
+      }
+      progress(stage);
+    }).finally(() => { state.finished = true; state.updatedAt = now(); });
+  }
   return {
     readRun,
     run(options: ExecutionOptions, load: () => Promise<LoadedGroups>) {
       return exclusive((runId, scope) => runLocked(runId, scope, options, load));
     },
-    preparePlan(options: { scanLimit: number; executeLimit: number }) {
-      return exclusive(async (_, scope) => {
-        const parsed = z.object({ scanLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), executeLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).safeParse(options);
-        if (!parsed.success) throw new ExecutionServiceError(400, "invalid_plan", "Invalid review limits");
-        const groups = groupListSchema.parse(await client.getAssetDuplicates({}));
-        if (new Set(groups.map((g) => g.duplicateId)).size !== groups.length) throw new ExecutionServiceError(503, "preflight_unavailable", "Duplicate group information is inconsistent");
-        const selected = groups.slice(0, options.scanLimit);
-        const candidates: ReviewedCandidate[] = [];
-        const excludedGroups: ReviewedPlanExclusion[] = [];
-        const index = journal.exclusionIndex(scope);
-        for (const group of selected) {
-          const excluded = exclusions(index, { groupId: group.duplicateId, assets: group.assets });
-          if (excluded) { excludedGroups.push({ ...excluded, message: `Excluded: ${excluded.reason}` }); continue; }
-          try {
-            const fresh = await readFreshPreflight(client, group.duplicateId);
-            const candidate = reviewedCandidate(fresh);
-            reviewedCandidateSchema.parse(candidate);
-            candidates.push(candidate);
-          } catch (error) {
-            if (!(error instanceof PreflightSafetyError)) throw new ExecutionServiceError(503, "preflight_unavailable", "Fresh Immich data could not be verified; no review was prepared");
-            excludedGroups.push({ groupId: group.duplicateId, reason: "ineligible", message: error.message, attemptIds: [] });
-          }
-        }
-        return { ok: true as const, plan: plans.put({ scope, ...options, fetchedGroups: selected.length, totalGroups: groups.length, candidates, excludedGroups }) };
-      });
+    async preparePlan(options: { scanLimit: number; executeLimit: number }) {
+      const result = await prepareReview(options);
+      return { ok: true as const, plan: result.plan! };
+    },
+    preparePlanStream: prepareReview,
+    cancelPreparation(preparationId: string) {
+      const state = preparations.get(preparationId);
+      if (!state || (state.finished && now() - state.updatedAt >= 15 * 60 * 1000)) throw new ExecutionServiceError(404, "preparation_not_found", "Review preparation is no longer available");
+      if (!state.finished) state.cancelled = true;
+      return { ok: true as const, status: state.finished ? "finished" as const : "cancelling" as const };
     },
     runReviewed(planId: string, request: { selectedGroupIds: string[]; dryRun?: boolean }) {
       return exclusive(async (runId, scope) => {

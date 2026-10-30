@@ -1,5 +1,6 @@
+import type { ReviewPreparationProgress } from '@immich-dedupe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, getLatestRun, getRun, prepareReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
+import { ApiError, getLatestRun, getRun, prepareReviewedPlan, cancelReviewedPreparation, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
 
 type Request = { phase: 'pending' | 'unknown' | 'failed'; dryRun: boolean; message: string; runId?: string; partial?: boolean } | null;
 function responseView(result: ExecutionRunResponse, startedAt: string): RunView {
@@ -23,6 +24,12 @@ export function useExecution(open: boolean) {
   const [selected, setSelected] = useState<string[]>([]);
   const [limits, setLimits] = useState({ scanLimit: 100, executeLimit: 5 });
   const [preparing, setPreparing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [preparationProgress, setPreparationProgress] = useState<ReviewPreparationProgress | null>(null);
+  const [preparationStartedAt, setPreparationStartedAt] = useState<number | null>(null);
+  const [progressUpdatedAt, setProgressUpdatedAt] = useState<number | null>(null);
+  const [preparationMessage, setPreparationMessage] = useState<string | null>(null);
+  const preparation = useRef<{ id: string | null; requested: boolean; sent: boolean } | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [authorization, setAuthorization] = useState<string | null>(null);
   const [invalid, setInvalid] = useState(false);
@@ -83,7 +90,7 @@ export function useExecution(open: boolean) {
 
   function changeLimits(next: typeof limits) {
     if (pending.current) return;
-    setLimits(next); setReview(null); setAuthorization(null); setSelected([]); setReviewError(null);
+    setLimits(next); setReview(null); setAuthorization(null); setSelected([]); setReviewError(null); setPreparationMessage(null);
   }
   function selectGroups(ids: string[]) {
     if (pending.current || !review) return;
@@ -91,22 +98,55 @@ export function useExecution(open: boolean) {
     const ordered = review.candidates.filter((c) => ids.includes(c.groupId)).map((c) => c.groupId);
     setSelected(ordered); setAuthorization(null);
   }
+  async function sendCancellation(session: NonNullable<typeof preparation.current>) {
+    if (!session.id || session.sent) return;
+    session.sent = true;
+    try { await cancelReviewedPreparation(session.id); }
+    catch (error) {
+      if (!mounted.current || preparation.current !== session || !pending.current) return;
+      session.sent = false; session.requested = false; setCancelling(false);
+      setReviewError(`Cancellation could not be confirmed. Preparation is still pending. ${error instanceof Error ? error.message : ''}`);
+    }
+  }
+  function cancelPreparation() {
+    const session = preparation.current;
+    if (!session || session.requested || !pending.current) return;
+    session.requested = true; setCancelling(true); setReviewError(null);
+    void sendCancellation(session);
+  }
   async function prepare() {
     if (pending.current) return;
     pending.current = true;
     const current = ++version.current;
+    const session = { id: null as string | null, requested: false, sent: false };
+    preparation.current = session;
+    setCancelling(false); setPreparationProgress(null); setPreparationMessage(null);
+    setPreparationStartedAt(Date.now()); setProgressUpdatedAt(Date.now());
     setPreparing(true); setReview(null); setSelected([]); setAuthorization(null); setReviewError(null); setReading(false);
     try {
-      const value = await prepareReviewedPlan(limits.scanLimit, limits.executeLimit);
+      const value = await prepareReviewedPlan(limits.scanLimit, limits.executeLimit, (progress) => {
+        if (!mounted.current || version.current !== current) return;
+        session.id = progress.preparationId;
+        setPreparationProgress(progress); setProgressUpdatedAt(Date.now());
+        if (session.requested) void sendCancellation(session);
+      });
       if (!mounted.current || version.current !== current) return;
+      setReviewError(null);
+      if (value.status === 'cancelled') {
+        setPreparationMessage(value.plan
+          ? `Review cancelled. ${value.plan.fetchedGroups} of ${value.plan.preparation?.targetGroups ?? value.plan.fetchedGroups} groups checked; completed results are available below.`
+          : 'Review cancelled before any groups were checked.');
+      } else if (session.requested) setPreparationMessage('The review finished before cancellation took effect. All completed results are available below.');
+      if (!value.plan) return value.status;
       const key = JSON.stringify(value.plan.scope);
       if (scope.current && key !== scope.current) { setRun(null); setPartialRun(null); setRequest(null); }
       scope.current = key;
       setReview(value.plan); setSelected(value.plan.candidates.slice(0, value.plan.executeLimit).map((c) => c.groupId));
       setInvalid(false); setExpired(Date.parse(value.plan.expiresAt) <= Date.now());
+      return value.status;
     } catch (error) {
       if (mounted.current && version.current === current) setReviewError(error instanceof Error ? error.message : 'Review could not be prepared');
-    } finally { pending.current = false; if (mounted.current && version.current === current) setPreparing(false); }
+    } finally { pending.current = false; if (mounted.current && version.current === current) { setPreparing(false); setCancelling(false); preparation.current = null; } }
   }
   const validReview = Boolean(review && !invalid && !expired);
   const selectionKey = JSON.stringify(selected);
@@ -147,7 +187,7 @@ export function useExecution(open: boolean) {
         runId: error instanceof ApiError ? error.runId : undefined, partial: error instanceof ApiError && Boolean(error.partialExecution) });
     } finally { pending.current = false; }
   }
-  return { review, selected, limits, preparing, reviewError, expired, invalid, validReview,
+  return { review, selected, limits, preparing, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
     prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
     run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }

@@ -516,6 +516,25 @@ input[type='checkbox'] {
   margin-top: 12px;
 }
 
+.review-preparation-activity {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #f6f8fc;
+}
+
+.review-preparation-activity p {
+  margin: 8px 0 0;
+}
+
+.review-preparation-activity progress {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  accent-color: #2563eb;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; }
 }
@@ -568,7 +587,8 @@ input[type='checkbox'] {
   margin-top: 8px;
 }
 
-.execution-results-table {
+.execution-results-table,
+.table-scroll {
   max-width: 100%;
   overflow-x: auto;
 }

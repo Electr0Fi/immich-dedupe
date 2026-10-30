@@ -29,7 +29,7 @@ export function WelcomeScreen() {
         <h3>Available now</h3>
         <ul>
           <li>Review duplicate groups already identified by Immich.</li>
-          <li>Compare image thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute the reviewed batch, and view or export logs. A spinner and status message show when a request is in progress.</li>
+          <li>Compare image thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute the reviewed batch, and view or export logs. Review preparation shows live stages, counts and elapsed time. Cancel review stops early and keeps fully checked results available for review, dry-run and execution. Other pending requests show a spinner and status message.</li>
           <li>Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.</li>
           <li>Single-group and batch execution share safety checks, logging, and run/attempt IDs. Overlapping execution or recovery actions are rejected within one API process.</li>
           <li>Unfinished and uncertain attempts stay quarantined across restarts. In Logs, recheck outcomes and explicitly allow a new attempt only when the pair is still intact and eligible; neither action runs cleanup.</li>
@@ -39,7 +39,7 @@ export function WelcomeScreen() {
         </ul>
         <h3>Automatic cleanup requirements</h3>
         <ul>
-          <li>The Immich API key needs user.read for account identity checks, including dry-runs and recovery actions, alongside permissions for the requested library operations.</li>
+          <li>Settings lists the API key permissions for connection checks, reviews, thumbnails and live cleanup. Thumbnails need asset.view; asset.read alone only permits metadata. Account identity checks, including dry-runs and recovery, require user.read.</li>
           <li>Exactly two images: keep the larger external-library image over an internal copy with matching filenames and dimensions.</li>
           <li>Favorites, archived/offline assets, edited/trashed assets, linked Live Photo images, videos, and assets with incomplete safety information are excluded.</li>
         </ul>

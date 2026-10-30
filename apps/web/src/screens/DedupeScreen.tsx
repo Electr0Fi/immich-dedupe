@@ -1,3 +1,4 @@
+import { ReviewPreparationActivity } from '../components/ReviewPreparationActivity';
 import { ReviewedBatch } from '../components/ReviewedBatch';
 import { ExecutionResults } from '../components/ExecutionResults';
 import type { ExecutionState } from '../useExecution';
@@ -63,8 +64,8 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
   }
 
   async function handlePrepare() {
-    await execution.prepare();
-    if (mounted.current) await refresh();
+    const outcome = await execution.prepare();
+    if (mounted.current && outcome === 'completed') await refresh();
   }
   async function handleRun(dryRun: boolean) {
     const additions = execution.review?.candidates.filter((c) => execution.selected.includes(c.groupId)).reduce((n, c) => n + c.proposedAlbumIds.length, 0) ?? 0;
@@ -102,7 +103,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
 
   const buttonsDisabled = execution.busy || execution.preparing || execution.reading || statusLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
-  const activityMessage = execution.preparing ? 'Preparing a fresh review… No Immich assets will be changed.' : execution.busy
+  const activityMessage = execution.busy
     ? execution.request?.dryRun
       ? 'Dry run in progress… No Immich assets will be changed.'
       : 'Execution in progress… Waiting for verified results.'
@@ -148,8 +149,8 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
           <button disabled={buttonsDisabled} onClick={refresh}>
             Refresh previews
           </button>
-          <button disabled={buttonsDisabled} onClick={handlePrepare}>
-            Prepare review
+          <button disabled={execution.preparing ? execution.cancelling : buttonsDisabled} onClick={execution.preparing ? execution.cancelPreparation : handlePrepare}>
+            {execution.preparing ? execution.cancelling ? 'Cancelling…' : 'Cancel review' : 'Prepare review'}
           </button>
           <button disabled={buttonsDisabled || !execution.validReview || execution.selected.length === 0} onClick={() => handleRun(true)}>
             {execution.busy && execution.request?.dryRun ? 'Running dry run…' : 'Dry-run selected'}
@@ -159,6 +160,8 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
           </button>
         </div>
 
+        {execution.preparing && <ReviewPreparationActivity execution={execution} />}
+        {execution.preparationMessage && <p role="status">{execution.preparationMessage}</p>}
         <div className="dedupe-activity status-refreshing" role="status" aria-live="polite" aria-atomic="true">
           {activityMessage && <><span className="spinner" aria-hidden="true" /><span>{activityMessage}</span></>}
         </div>

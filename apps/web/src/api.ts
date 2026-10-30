@@ -1,4 +1,5 @@
-import type { RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
+import { consumeReviewPreparation } from './reviewPreparationStream';
+import type { ReviewPreparationProgress, ReviewPreparationResult, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
 export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
@@ -283,8 +284,24 @@ export function releaseAttempt(attemptId: string) {
   return apiPost<{ ok: boolean; attempt: RecoveryAttempt }>(`/execution/recovery/${encodeURIComponent(attemptId)}/release`, { confirm: true });
 }
 
-export function prepareReviewedPlan(scanLimit: number, executeLimit: number) {
-  return apiPost<ReviewedPlanResponse>('/execution/plans', { scanLimit, executeLimit });
+export async function prepareReviewedPlan(scanLimit: number, executeLimit: number, onProgress: (progress: ReviewPreparationProgress) => void): Promise<ReviewPreparationResult> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/execution/plans`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ scanLimit, executeLimit }),
+    });
+  } catch { throw new Error('Cannot reach the Dedupe API. Check that the API is running and accessible from this browser, then try again'); }
+  if (!response.ok || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
+    const value = await readResponse<ReviewedPlanResponse>(response);
+    return { status: 'completed', plan: value.plan };
+  }
+  if (!response.body) throw new Error('Review preparation response was incomplete');
+  const terminal = await consumeReviewPreparation(response.body, onProgress);
+  if (terminal.type === 'error') throw new ApiError(terminal.status, terminal.error, undefined, terminal.code);
+  return terminal.result;
+}
+export function cancelReviewedPreparation(preparationId: string) {
+  return apiPost<{ ok: true; status: 'finished' | 'cancelling' }>(`/execution/preparations/${encodeURIComponent(preparationId)}/cancel`, {});
 }
 export function runReviewedPlan(planId: string, selectedGroupIds: string[], dryRun: boolean) {
   return apiPost<ExecutionRunResponse>(`/execution/plans/${encodeURIComponent(planId)}/run`, { selectedGroupIds, dryRun });

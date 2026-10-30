@@ -161,7 +161,18 @@ export type ReviewedPlan = {
   planId: string; scope: ExecutionScope; createdAt: string; expiresAt: string;
   scanLimit: number; executeLimit: number; fetchedGroups: number; totalGroups: number;
   candidates: ReviewedCandidate[]; excludedGroups: ReviewedPlanExclusion[];
+  preparation?: { status: "completed" | "cancelled"; checkedGroups: number; targetGroups: number };
 };
+export type ReviewPreparationStage = "checking-history" | "checking-identity" | "fetching-groups" | "checking-membership" | "checking-assets" | "checking-albums" | "finalizing";
+export type ReviewPreparationProgress = {
+  preparationId: string; stage: ReviewPreparationStage;
+  checkedGroups: number; targetGroups: number | null; eligibleGroups: number; excludedGroups: number;
+};
+export type ReviewPreparationResult = { status: "completed" | "cancelled"; plan: ReviewedPlan | null };
+export type ReviewPreparationEvent =
+  | { type: "progress"; progress: ReviewPreparationProgress }
+  | { type: "result"; result: ReviewPreparationResult }
+  | { type: "error"; status: number; code: string; error: string };
 export type CreateReviewedPlanRequest = { scanLimit?: number; executeLimit?: number };
 export type ReviewedExecutionRequest = { selectedGroupIds: string[]; dryRun?: boolean };
 export type ReviewedPlanResponse = { ok: true; plan: ReviewedPlan };

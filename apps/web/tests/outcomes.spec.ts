@@ -1,3 +1,4 @@
+import { consumeReviewPreparation } from '../src/reviewPreparationStream';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import type { RunView, RunViewResponse } from '@immich-dedupe/shared';
 
@@ -438,4 +439,142 @@ test('selection limit is enforced without backfilling a deselected group', async
   await expect(firstCheck).toBeChecked(); await expect(otherCheck).not.toBeChecked(); await expect(otherCheck).toBeDisabled();
   await firstCheck.uncheck(); await expect(otherCheck).not.toBeChecked(); await expect(otherCheck).toBeEnabled();
   await otherCheck.check(); await expect(firstCheck).not.toBeChecked(); await expect(firstCheck).toBeDisabled();
+});
+
+type PreparationTestWindow = Window & { preparationTest: {
+  push: (event: unknown) => void; raw: (text: string) => void; finish: () => void;
+  cancelCalls: number; rejectCancel: boolean;
+} };
+async function startStreamedPreparation(page: Page) {
+  await fakeApi(page, null);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
+  await page.evaluate(() => {
+    const original = window.fetch.bind(window);
+    let controller: ReadableStreamDefaultController<Uint8Array>;
+    const encoder = new TextEncoder();
+    const harness = {
+      push: (event: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)),
+      raw: (text: string) => controller.enqueue(encoder.encode(text)),
+      finish: () => controller.close(), cancelCalls: 0, rejectCancel: false,
+    };
+    (window as unknown as PreparationTestWindow).preparationTest = harness;
+    window.fetch = async (input, init) => {
+      if (String(input).endsWith('/execution/plans') && init?.method === 'POST') {
+        return new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }), { headers: { 'Content-Type': 'application/x-ndjson' } });
+      }
+      if (String(input).includes('/execution/preparations/') && String(input).endsWith('/cancel')) {
+        harness.cancelCalls++;
+        if (harness.rejectCancel) throw new TypeError('Network unavailable');
+        return new Response(JSON.stringify({ ok: true, status: 'cancelling' }), { headers: { 'Content-Type': 'application/json' } });
+      }
+      return original(input, init);
+    };
+  });
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Cancel review', exact: true })).toBeEnabled();
+}
+async function pushProgress(page: Page, checkedGroups = 1) {
+  await page.evaluate(({ runId, checkedGroups }) => {
+    (window as unknown as PreparationTestWindow).preparationTest.push({ type: 'progress', progress: {
+      preparationId: runId, stage: 'checking-albums', checkedGroups, targetGroups: 100, eligibleGroups: checkedGroups, excludedGroups: 0,
+    } });
+  }, { runId, checkedGroups });
+}
+async function finishPreparation(page: Page, status: 'completed' | 'cancelled', empty = false) {
+  const plan = empty ? null : { ...reviewPlan(), fetchedGroups: 1, totalGroups: 100, excludedGroups: [], preparation: { status, checkedGroups: 1, targetGroups: 100 } };
+  await page.evaluate(({ status, plan }) => {
+    const harness = (window as unknown as PreparationTestWindow).preparationTest;
+    harness.push({ type: 'result', result: { status, plan } }); harness.finish();
+  }, { status, plan });
+}
+
+test('review progress, elapsed time and cancellation survive navigation; completed groups remain usable', async ({ page }) => {
+  await startStreamedPreparation(page);
+  await pushProgress(page);
+  await expect(page.getByText('Checking album memberships', { exact: true })).toBeVisible();
+  await expect(page.getByText('1 of 100 groups checked · 1 eligible · 0 excluded')).toBeVisible();
+  await expect(page.getByRole('progressbar', { name: 'Review groups checked' })).toHaveAttribute('value', '1');
+  await expect(page.getByText(/Elapsed [1-9]\d*s/)).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByText('1 of 100 groups checked · 1 eligible · 0 excluded')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel review', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Cancelling…', exact: true })).toBeDisabled();
+  await expect.poll(() => page.evaluate(() => (window as unknown as PreparationTestWindow).preparationTest.cancelCalls)).toBe(1);
+  await finishPreparation(page, 'cancelled');
+  await expect(page.getByText('Review cancelled. 1 of 100 groups checked; completed results are available below.')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
+  await expect(page.getByRole('checkbox', { name: 'Include group photos' })).toBeChecked();
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+});
+
+test('an immediate cancellation is queued until the preparation ID arrives and zero results is normal', async ({ page }) => {
+  await startStreamedPreparation(page);
+  await page.getByRole('button', { name: 'Cancel review', exact: true }).click();
+  expect(await page.evaluate(() => (window as unknown as PreparationTestWindow).preparationTest.cancelCalls)).toBe(0);
+  await pushProgress(page, 0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as PreparationTestWindow).preparationTest.cancelCalls)).toBe(1);
+  await finishPreparation(page, 'cancelled', true);
+  await expect(page.getByText('Review cancelled before any groups were checked.')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeDisabled();
+});
+
+test('cancellation transport failure allows another cancellation without losing progress', async ({ page }) => {
+  await startStreamedPreparation(page); await pushProgress(page);
+  await page.evaluate(() => { (window as unknown as PreparationTestWindow).preparationTest.rejectCancel = true; });
+  await page.getByRole('button', { name: 'Cancel review', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Cancellation could not be confirmed');
+  await expect(page.getByRole('button', { name: 'Cancel review', exact: true })).toBeEnabled();
+  await expect(page.getByText('1 of 100 groups checked · 1 eligible · 0 excluded')).toBeVisible();
+  await page.evaluate(() => { (window as unknown as PreparationTestWindow).preparationTest.rejectCancel = false; });
+  await page.getByRole('button', { name: 'Cancel review', exact: true }).click();
+  await finishPreparation(page, 'cancelled');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('completion winning a cancellation race retains the finished review', async ({ page }) => {
+  await startStreamedPreparation(page); await pushProgress(page);
+  await page.getByRole('button', { name: 'Cancel review', exact: true }).click();
+  await finishPreparation(page, 'completed');
+  await expect(page.getByText('The review finished before cancellation took effect. All completed results are available below.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeEnabled();
+});
+
+test('streamed terminal errors and truncation do not install a partial review', async ({ page }) => {
+  await startStreamedPreparation(page); await pushProgress(page);
+  await page.evaluate(() => {
+    const h = (window as unknown as PreparationTestWindow).preparationTest;
+    h.push({ type: 'error', status: 503, code: 'preflight_unavailable', error: 'Fresh data unavailable' }); h.finish();
+  });
+  await expect(page.getByRole('alert')).toContainText('Fresh data unavailable');
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
+  await pushProgress(page);
+  await page.evaluate(() => (window as unknown as PreparationTestWindow).preparationTest.finish());
+  await expect(page.getByRole('alert')).toContainText('response was incomplete');
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeDisabled();
+});
+
+test('stream parser handles arbitrary byte boundaries including split UTF-8 characters', async () => {
+  const text = JSON.stringify({ type: 'error', status: 503, code: 'test', error: 'Album “Família” unavailable' }) + '\n';
+  const bytes = new TextEncoder().encode(text);
+  const body = new ReadableStream<Uint8Array>({ start(c) { for (const byte of bytes) c.enqueue(new Uint8Array([byte])); c.close(); } });
+  expect(await consumeReviewPreparation(body, () => undefined)).toEqual({ type: 'error', status: 503, code: 'test', error: 'Album “Família” unavailable' });
+});
+
+function streamBody(text: string) {
+  return new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(text)); c.close(); } });
+}
+test('stream parser rejects missing terminals, malformed events and post-terminal data', async () => {
+  for (const text of ['', '{"type":"result"}', '{broken}\n', '{"type":"progress","progress":{}}\n', '{"type":"result","result":{"status":"completed","plan":null}}\n']) {
+    await expect(consumeReviewPreparation(streamBody(text), () => undefined)).rejects.toThrow();
+  }
+  const terminal = JSON.stringify({ type: 'result', result: { status: 'cancelled', plan: null } }) + '\n';
+  await expect(consumeReviewPreparation(streamBody(terminal + terminal), () => undefined)).rejects.toThrow('Unexpected data');
+  expect(await consumeReviewPreparation(streamBody(terminal), () => undefined)).toEqual({ type: 'result', result: { status: 'cancelled', plan: null } });
 });

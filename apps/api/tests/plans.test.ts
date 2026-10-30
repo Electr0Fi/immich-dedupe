@@ -184,3 +184,106 @@ test('v3 review evidence is immutable and missing authorization files fail close
   fs.writeFileSync(dryFile, untouched);
   assert.equal(createExecutionJournal(path.join(h.dir, 'journal')).health().health, 'ready');
 });
+
+test('cancelled reviews retain only completed groups and still require exact dry-run authorization', async (t) => {
+  const h = setup(t), second = executionHarness('second');
+  h.client.getAllAlbums = async () => [];
+  h.client.getAssetDuplicates = async () => [structuredClone(h.raw), structuredClone(second.raw)];
+  const getAssetInfo = h.client.getAssetInfo;
+  h.client.getAssetInfo = async (args) => args.id.startsWith('second') ? second.client.getAssetInfo(args) : getAssetInfo(args);
+  const events: import('@immich-dedupe/shared').ReviewPreparationProgress[] = [];
+  const result = await h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 }, (p) => {
+    events.push(p);
+    if (p.checkedGroups === 1) h.execution.cancelPreparation(p.preparationId);
+  });
+  assert.equal(result.status, 'cancelled'); assert.ok(result.plan);
+  assert.deepEqual(result.plan.candidates.map((c) => c.groupId), ['group']);
+  assert.equal(result.plan.fetchedGroups, 1); assert.equal(result.plan.totalGroups, 2);
+  assert.deepEqual(result.plan.preparation, { status: 'cancelled', checkedGroups: 1, targetGroups: 2 });
+  assert.ok(events.some((p) => p.stage === 'checking-assets')); assert.ok(events.some((p) => p.stage === 'checking-albums'));
+  for (const p of events) assert.equal(p.checkedGroups, p.eligibleGroups + p.excludedGroups);
+  assert.equal(h.execution.cancelPreparation(events[0].preparationId).status, 'finished');
+  await assert.rejects(h.execution.runReviewed(result.plan.planId, { selectedGroupIds: ['group'], dryRun: false }), error(409, 'dry_run_required'));
+  assert.equal((await h.execution.runReviewed(result.plan.planId, { selectedGroupIds: ['group'] })).results[0].outcome, 'dry-run');
+  assert.equal((await h.execution.runReviewed(result.plan.planId, { selectedGroupIds: ['group'], dryRun: false })).results[0].outcome, 'succeeded');
+  assert.deepEqual(second.mutations, []);
+});
+
+for (const stage of ['checking-history', 'fetching-groups', 'checking-assets', 'checking-albums'] as const) test(`cancellation during ${stage} never retains an unfinished group`, async (t) => {
+  const h = setup(t);
+  const result = await h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 }, (p) => {
+    if (p.stage === stage) {
+      assert.equal(h.execution.cancelPreparation(p.preparationId).status, 'cancelling');
+      assert.equal(h.execution.cancelPreparation(p.preparationId).status, 'cancelling');
+    }
+  });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.plan?.candidates.length ?? 0, 0);
+  assert.equal(result.plan?.excludedGroups.length ?? 0, 0);
+  assert.deepEqual(h.mutations, []);
+  assert.equal((await h.prepare()).candidates.length, 1);
+});
+
+test('cancellation holds the lock until all in-flight album reads settle', async (t) => {
+  const h = setup(t);
+  let release!: () => void, entered!: () => void, id = '', calls = 0;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  h.client.getAllAlbums = async () => { calls++; entered(); await wait; return []; };
+  const pending = h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 }, (p) => { id = p.preparationId; });
+  await started;
+  h.execution.cancelPreparation(id);
+  await assert.rejects(h.prepare(), error(409));
+  await assert.rejects(h.execution.clearLog(), error(409));
+  release(); const result = await pending;
+  assert.equal(calls, 4); assert.equal(result.status, 'cancelled'); assert.equal(result.plan?.fetchedGroups, 0);
+  assert.deepEqual(h.mutations, []);
+});
+
+test('progress observer failures do not interrupt preparation and unknown cancellation is rejected', async (t) => {
+  const h = setup(t);
+  const result = await h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 }, () => { throw new Error('Disconnected'); });
+  assert.equal(result.status, 'completed'); assert.equal(result.plan?.candidates.length, 1);
+  assert.throws(() => h.execution.cancelPreparation('unknown'), error(404));
+});
+
+test('empty reviews finish with accurate counts and failures after cancellation remain failures', async (t) => {
+  const h = setup(t); const groups = h.client.getAssetDuplicates;
+  h.client.getAssetDuplicates = async () => [];
+  const empty = await h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 });
+  assert.equal(empty.status, 'completed'); assert.equal(empty.plan?.fetchedGroups, 0);
+  h.client.getAssetDuplicates = groups;
+  h.client.getAllAlbums = async () => { throw new Error('upstream unavailable'); };
+  await assert.rejects(h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 }, (p) => {
+    if (p.stage === 'checking-albums') h.execution.cancelPreparation(p.preparationId);
+  }), error(503));
+  assert.deepEqual(h.mutations, []);
+});
+
+test('a failing parallel read cannot release the preparation lock before other reads settle', async (t) => {
+  const h = setup(t);
+  let release!: () => void, entered!: () => void, calls = 0;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  h.client.getAllAlbums = async () => {
+    calls++;
+    if (calls === 1) { entered(); await wait; return []; }
+    throw new Error('read failed');
+  };
+  const pending = h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 });
+  const rejected = assert.rejects(pending, error(503));
+  await started;
+  await assert.rejects(h.prepare(), error(409));
+  release(); await rejected;
+  assert.equal(calls, 4); assert.deepEqual(h.mutations, []);
+});
+
+test('partial review counts include completed exclusions and cancellation of the final check retains them', async (t) => {
+  const h = setup(t); h.assets.get('group-keep')!.isFavorite = true;
+  const result = await h.execution.preparePlanStream({ scanLimit: 100, executeLimit: 10 }, (p) => {
+    if (p.checkedGroups === 1) h.execution.cancelPreparation(p.preparationId);
+  });
+  assert.equal(result.status, 'cancelled'); assert.equal(result.plan?.fetchedGroups, 1);
+  assert.equal(result.plan?.candidates.length, 0); assert.equal(result.plan?.excludedGroups[0].reason, 'ineligible');
+  assert.deepEqual(h.mutations, []);
+});

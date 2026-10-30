@@ -7,7 +7,7 @@ A local React/Express application for reviewing duplicate groups already identif
 ### Available now
 
 - Review duplicate groups already identified by Immich.
-- Compare keeper/loser thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute reviewed batches, and view or export batch logs as JSON or CSV. Dedupe shows a spinner and status message while requests are in progress.
+- Compare keeper/loser thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute reviewed batches, and view or export batch logs as JSON or CSV. Review preparation shows live stages, checked/eligible/excluded counts and elapsed time. Cancel review stops early and retains fully checked groups as a usable partial review. Other pending requests show a spinner and status message.
 - Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.
 - Recheck group membership, asset details, file sizes, and album memberships before execution rather than relying on the preview cache.
 - Single-group and batch execution share safety checks, logging, run/attempt IDs, and processed/quarantine exclusions. Overlapping execution, recovery, or log-clearing requests return HTTP 409 within one API process.
@@ -19,7 +19,7 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ### Automatic cleanup requirements
 
-- The Immich API key needs `user.read` for account identity checks, including dry-runs and recovery actions, in addition to permissions for the requested library operations.
+- Settings lists the API key permissions for connection checks, reviews, thumbnails and live cleanup. Thumbnails need `asset.view`; metadata access through `asset.read` alone is insufficient. See [Required Immich API key permissions](#required-immich-api-key-permissions).
 - Exactly two images: keep the larger external-library image over an internal copy with matching filenames and dimensions.
 - Favorites, archived/offline assets, edited/trashed assets, linked Live Photo images, videos, and assets with incomplete safety information are excluded.
 - Source classification uses configured-in-code path prefixes. Unknown paths cannot qualify. See `apps/api/src/classifySource.ts` for the current prefixes.
@@ -72,10 +72,33 @@ The API defaults to port 3001. Open the Vite URL printed in the terminal, normal
 
 1. Check the connection in Settings. Restart the API after saving connection changes and reload the browser to refresh the header status.
 2. Open Dedupe and choose a scan limit (groups examined) and execution limit (eligible attempts).
-3. Click **Prepare review**. Compare the keeper/loser images, filenames, sources, dimensions, sizes, and named album changes. Include or exclude eligible groups within the attempt limit.
+3. Click **Prepare review**. Follow live stages and counts, or click **Cancel review** to stop after outstanding reads settle and keep fully checked results. Compare the keeper/loser images, filenames, sources, dimensions, sizes, and named album changes. Include or exclude eligible groups within the attempt limit.
 4. Click **Dry-run selected**. Changing the selection clears approval. Proposed album transfers have not been performed.
 5. Choose **Execute selected** after the dry-run passes. Confirm the selected group and album-addition counts. Execution rechecks current data and may stop if it changed.
 6. Inspect the outcome and batch logs. Investigate `needs-verification` results before retrying; no mutation is automatically retried.
+
+## Required Immich API key permissions
+
+In Immich, open **Account Settings → API Keys** and edit or create the key configured for this app. Enable these specific scopes for the full workflow; granting `all` is unnecessary. The mapping below is checked against Immich v2.7.5, matching this project's installed SDK. Your server must also support the endpoints used by the app.
+
+| Permission | Purpose | Needed for |
+| --- | --- | --- |
+| `server.about` | Connection test, version information and header status (`GET /server/about`) | Connection |
+| `user.read` | Account identity (`GET /users/me`) for scoped reviews, execution evidence and recovery | Read/review |
+| `duplicate.read` | Duplicate previews and fresh membership checks (`GET /duplicates`) | Read/review |
+| `asset.read` | Metadata, sizes, safety checks and result verification (`GET /assets/:id`) | Read/review |
+| `asset.view` | Keeper/loser thumbnail images (`GET /assets/:id/thumbnail?size=thumbnail`) | Review images |
+| `album.read` | List albums, read memberships and verify preservation (`GET /albums`, `GET /albums/:id`) | Read/review |
+| `albumAsset.create` | Add the keeper to missing loser albums (`PUT /albums/assets`) | Live cleanup |
+| `duplicate.delete` | Resolve the reviewed group and trash selected losers (`POST /duplicates/resolve`) | Live cleanup |
+
+Previews, preparation, dry-runs and recovery reads need the first six permissions. Live cleanup additionally needs the last two. The `duplicate.delete` permission name does not change the cleanup endpoint: this app uses `POST /duplicates/resolve`. Immich also enforces the account's rights to the assets and albums: the account must be able to view the images, share/add the keeper to required albums and delete the selected loser. API scopes do not override those rights, including shared-album editor access.
+
+**If thumbnails are unavailable:** enable **`asset.view`**. `asset.read` permits metadata, not thumbnail bytes. This app requests thumbnail size, so `asset.download` is not needed. After changing permissions, click **Prepare review** again; failed image placeholders do not retry automatically. If thumbnails still fail, verify that the account can view the images in Immich and that their thumbnails have been generated. Expired plans, unavailable servers and unsupported image responses can also cause the placeholder; it is not proof of a missing permission.
+
+Permission edits on the same key are applied by Immich; no backend restart is needed solely for that edit. If you replace the configured key, use **Test and save** and restart this app's API (or update `apps/api/.env` and restart), then prepare a new review. The connection test checks `server.about`, not the complete permission set. Do not run live cleanup merely to test permissions.
+
+Sources: Immich v2.7.5 [thumbnail endpoint](https://github.com/immich-app/immich/blob/v2.7.5/server/src/controllers/asset-media.controller.ts), [server](https://github.com/immich-app/immich/blob/v2.7.5/server/src/controllers/server.controller.ts), [user](https://github.com/immich-app/immich/blob/v2.7.5/server/src/controllers/user.controller.ts), [asset](https://github.com/immich-app/immich/blob/v2.7.5/server/src/controllers/asset.controller.ts), [album](https://github.com/immich-app/immich/blob/v2.7.5/server/src/controllers/album.controller.ts) and [duplicate](https://github.com/immich-app/immich/blob/v2.7.5/server/src/controllers/duplicate.controller.ts) controllers; [account access checks](https://github.com/immich-app/immich/blob/v2.7.5/server/src/utils/access.ts).
 
 ## Execution API behavior
 
@@ -167,3 +190,5 @@ Only the selected groups run, in review order, with no replacement groups, manua
 `GET /execution/plans/:planId/assets/:assetId/thumbnail` proxies only reviewed assets for the current connection, using backend credentials and no-store responses. Missing image permissions or unavailable thumbnails show placeholders without changing eligibility. No original images are requested.
 
 The WebUI uses planned execution exclusively. Legacy batch/single-group API routes remain available with their existing live behavior; enforcing reviewed execution on every live API route is deferred to PR7.
+
+Review preparation supports streamed progress through `POST /execution/plans` with `Accept: application/x-ndjson`; other callers retain the JSON response. Events report progress and one terminal result (completed/cancelled with a plan, or cancelled without a plan before scanning) or sanitized error. `POST /execution/preparations/:preparationId/cancel` requests cancellation without competing for the coordinator lock. The lock stays held until outstanding read batches settle and the partial plan is finalized; unfinished groups are omitted. Partial reviews retain the usual expiry, scope, dry-run authorization and fresh execution checks. Cancellation is confirmed only by the terminal preparation result, not by closing the connection. Reload/restart restoration, automatic reconnection, mutation cancellation and time-remaining estimates are not implemented.

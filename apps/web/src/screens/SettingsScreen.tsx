@@ -130,7 +130,7 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
       <span className="connection-result connection-result--testing">Connecting…</span>
     ) : conn.testStatus === 'success' ? (
       <span className="connection-result connection-result--success">
-        Connection test passed and settings saved. Restart the API to apply the connection; reload the page to refresh the header status. This test does not verify cleanup or user.read permissions.
+        Connection test passed and settings saved. Restart the API to apply the connection; reload the page to refresh the header status. This test checks server.about only; it does not verify review, thumbnail, cleanup or user.read permissions.
         {conn.serverVersion && <><br />Server {conn.serverVersion}</>}
       </span>
     ) : (
@@ -192,6 +192,29 @@ export function SettingsScreen({ safety, onSafetyChange: setSafety }: Props) {
             {connectionResult}
           </div>
         </div>
+
+        <section aria-labelledby="api-permissions-title">
+          <h3 id="api-permissions-title">Required API key permissions</h3>
+          <p>In Immich, open Account Settings → API Keys and edit or create the key used here. Grant these permissions for the full workflow with the Immich 2.7.x API used by this app.</p>
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>Permission</th><th>Used for</th></tr></thead>
+              <tbody>
+                <tr><td><code>server.about</code></td><td>Connection test, server version and header connection status.</td></tr>
+                <tr><td><code>user.read</code></td><td>Account identity for reviews, dry-runs, execution, saved runs and recovery.</td></tr>
+                <tr><td><code>duplicate.read</code></td><td>Duplicate previews and fresh group membership checks.</td></tr>
+                <tr><td><code>asset.read</code></td><td>Asset metadata, file sizes, safety checks and outcome verification.</td></tr>
+                <tr><td><code>asset.view</code></td><td>Keeper and loser thumbnail images in prepared reviews.</td></tr>
+                <tr><td><code>album.read</code></td><td>Album memberships and album-preservation verification.</td></tr>
+                <tr><td><code>albumAsset.create</code></td><td>Live execution: add the keeper to missing loser albums.</td></tr>
+                <tr><td><code>duplicate.delete</code></td><td>Live execution: resolve duplicate groups and trash the selected losers.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>For previews, review preparation, dry-runs and recovery reads, the first six permissions are sufficient. Live cleanup also needs the last two. These scopes do not override the account’s asset ownership or album access; preserving a shared album requires permission to add assets to it.</p>
+          <p><strong>Thumbnail unavailable?</strong> Check <code>asset.view</code>; <code>asset.read</code> covers metadata only. This app requests thumbnails, so <code>asset.download</code> is not needed. After changing permissions, prepare a new review to retry failed images. If they still fail, check that Immich can display the images and has generated their thumbnails; an expired review or an unavailable server can also prevent loading.</p>
+          <p>Changes to permissions on the same key are applied by Immich. If you replace the key here, use Test and save, then restart this app’s API. A successful connection test does not verify the other permissions. Use these specific scopes instead of granting all permissions.</p>
+        </section>
       </section>
 
       <section className="card">

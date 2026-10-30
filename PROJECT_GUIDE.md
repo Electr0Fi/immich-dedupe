@@ -92,6 +92,25 @@ Connection Settings can test supplied credentials and write them to `apps/api/.e
 
 The configured Immich key must permit `GET /users/me` (`user.read`) in addition to permissions for the requested library operations. Execution (including dry-runs), recovery changes, and log clearing fail closed with HTTP 503 if account identity cannot be verified. A successful connection test does not establish this permission. Identity errors distinguish missing `user.read`, denied access, and rejected credentials without exposing raw SDK errors. Enable the permission on the key in Immich, or replace the configured key and restart the API. Do not bypass the lookup or change recovery evidence to resolve a permissions error.
 
+## Immich API key permissions
+
+Settings → Immich Connection includes a static Required API key permissions table. The complete setup and troubleshooting instructions are in [README: Required Immich API key permissions](README.md#required-immich-api-key-permissions). Verified against the official Immich v2.7.5 controllers, matching the installed SDK:
+
+| Scope | App operation |
+| --- | --- |
+| `server.about` | Settings Test and save and header status use `GET /server/about`; ping alone is public and does not verify credentials/scopes. |
+| `user.read` | `GET /users/me` scopes reviews, execution (including dry-runs), saved-run reads, recovery and log clearing. |
+| `duplicate.read` | `GET /duplicates` supplies previews and fresh group membership. |
+| `asset.read` | `GET /assets/:id` supplies metadata/sizes and verification evidence. |
+| `asset.view` | Backend-proxied review thumbnails use `GET /assets/:id/thumbnail?size=thumbnail`. |
+| `album.read` | Album listings/details support previews, fresh memberships and preservation verification. |
+| `albumAsset.create` | Live execution adds the keeper to missing loser albums using `PUT /albums/assets`. |
+| `duplicate.delete` | Live execution uses `POST /duplicates/resolve` to resolve the selected pair and trash the loser. |
+
+The first six scopes support read/review/dry-run workflows; the final two enable live operations. Do not recommend `all`. These are endpoint key permissions, distinct from the account-level asset sharing/deletion and album edit rights enforced by Immich's services. Additional API scopes cannot grant access to another user's assets or read-only shared albums. The permission set cannot compensate for a server missing the required endpoints.
+
+`asset.read` does not authorize thumbnail bytes: enable `asset.view`. Thumbnail-size requests do not require `asset.download`. If the same key's permissions are edited in Immich, prepare a new review to reset failed image placeholders; no backend restart is needed solely for that permission edit. Replacing the saved key still requires an API restart. The placeholder also covers absent/generated-media failures, expired plans, network/proxy failures and unsupported response types; do not diagnose every placeholder as a missing scope. Check that Immich can display the images and has generated thumbnails. Connection tests only establish server.about access, not the full permission set. No live mutations are needed to validate documentation or settings help.
+
 ## Data flow
 
 ```text
@@ -241,7 +260,7 @@ Shared `RunView`/`RunViewResponse` contracts expose timestamps, request/report m
 
 Dedupe summarizes verified completed, simulated, failed, needs verification and awaiting-result attempts, plus processed/legacy/quarantined exclusions. Each summary tile has an information icon with a definition on hover, focus or tap; Escape dismisses it. Technical IDs, proposed/confirmed albums and failure stages are expandable. Review recovery opens the exact attempt independently of list pagination, focuses the evidence, supports already-closed attempts and offers Back to results. Subsequent assessments do not rewrite historical outcomes.
 
-Dedupe controls show a spinner and accessible status message while dry-run/live requests are pending, with a matching label on the active button. Preview refresh and latest-run loading have separate activity messages. The indicator reflects a pending request, not streamed per-group progress; it clears on completion or error and respects reduced-motion preferences.
+Dedupe controls show a spinner and accessible status message while dry-run/live requests are pending, with a matching label on the active button. Preview refresh and latest-run loading have separate activity messages. For dry-run/live execution the indicator reflects a pending request, not streamed per-group progress; it clears on completion or error and respects reduced-motion preferences.
 
 The shell retains pending requests/results through navigation. Latest is scoped to the server account, includes other-tab requests and is restored when Dedupe opens after reload; Welcome stays the default page. Refresh latest performs a read with no automatic polling, retries or cleanup. Stale responses cannot replace a newer request. Pending work, rejected requests, lost responses (unknown, possibly still running), and preview-refresh errors are separate. Returned partial-response evidence is retained separately from journal reads during the browser session: unsaved facts cannot be restored after reload. A changed verified scope clears old partial evidence.
 
@@ -297,3 +316,13 @@ Journal v3 records preserve immutable plan ID/timestamps, selected candidates/or
 GET /execution/plans/:planId/assets/:assetId/thumbnail verifies current identity, plan lifetime and reviewed asset membership before SDK viewAsset at thumbnail size. Supported raster images are returned with no-store and nosniff; upstream failures are redacted and unsupported content rejected. Thumbnails are lazy-loaded and failures show accessible placeholders without changing eligibility. The proxy accepts no upstream URL, key, original-media or shared-link parameters.
 
 The UI uses the planned endpoint exclusively. Legacy POST /execution/run and single-group execution retain their existing behavior, including explicit live requests; requiring reviews on those API routes is PR7. Separate API operations still are not transactional and external races remain possible.
+
+## Review preparation progress and cancellation
+
+`POST /execution/plans` retains its ordinary JSON response and additionally supports `Accept: application/x-ndjson`. The stream emits `progress` events (opaque preparation ID, actual stage, checked count, scan-window target once known, eligible/excluded counts), then a terminal `result` with completed/cancelled status and a plan, or an `error` with sanitized message, code and equivalent HTTP status. HTTP errors before streaming retain JSON error responses. Streamed errors after headers use terminal error events. Responses use no-store and disable proxy buffering where supported. Slow readers may miss intermediate progress updates, but not the terminal result.
+
+`POST /execution/preparations/:preparationId/cancel` sets an in-memory flag without taking the coordinator lock or making Immich calls. It returns cancelling while active, finished after completion, 400 for invalid UUIDs and 404 for unknown/expired IDs. Finished preparation IDs are retained for up to 15 minutes, capacity 20 with oldest eviction. Cancellation is cooperative between read batches. Outstanding asset/album reads settle before the lock is released, including errors; unfinished groups are discarded. Actual upstream/storage/identity failures remain errors. A disconnected observer does not cancel preparation.
+
+Cancelled preparations store a normal immutable, scoped partial plan from fully checked candidates and exclusions. Optional plan `preparation` metadata records status, checkedGroups and targetGroups; fetchedGroups counts completed checks and totalGroups is the library total. If cancellation precedes scope/group information, no plan is returned. Partial reviews use the existing 15-minute expiry/capacity, thumbnail access, exact-selection journaled dry-run authorization and fresh execution checks. Journal formats and mutation safeguards are unchanged.
+
+The shell keeps streamed progress, start time and cancellation state across navigation. Prepare review becomes Cancel review immediately; early cancellation clicks wait locally for the preparation ID, then show Cancelling until the terminal result arrives. Cancellation errors allow another explicit cancellation without discarding progress. Successful cancellation shows a neutral summary and the usable partial review. If completion wins the race, the full review is retained. The UI shows elapsed time outside live announcements, a labeled count-based progress bar when the target is known, and an explanatory waiting message after 30 seconds without progress. It gives no completion-time estimate. A malformed/truncated/lost stream never installs an unconfirmed partial review or automatically retries. Preparation state is not restored after reload/restart.
