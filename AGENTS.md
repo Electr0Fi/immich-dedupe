@@ -21,6 +21,7 @@ Stack: pnpm workspace, TypeScript, Express 5, `@immich/sdk` 2.7.x, Zod 4, React 
 | `apps/api/src/config.ts`, `immich.ts` | Environment validation and SDK initialization |
 | `apps/api/src/normalizeDuplicates.ts`, `classifySource.ts` | Shared asset records and source classification |
 | `apps/api/src/enrichWithAssetInfo.ts`, `enrichWithAlbums.ts` | File-size and album enrichment |
+| `apps/api/src/albumMembership.ts` | Validated fresh album membership reads for embedded-assets and v3 metadata-only responses |
 | `apps/api/src/executeDecision.ts` | Single-group guards, album transfer, resolution, verification |
 | `apps/api/src/executionService.ts` | Sole production coordinator: locking, scopes, journaling, exclusions, audit, reconciliation |
 | `apps/api/src/executionJournal.ts`, `atomicJson.ts` | Validated versioned run records and durable atomic writes |
@@ -164,3 +165,5 @@ AND/OR resolution: current rules use schema/engine 2 and empty compatibility kee
 Reviewed execution supports opt-in NDJSON progress on the existing plan run route. Keep observations separate from journal authority: observer failures/disconnects must not interrupt, retry, authorize or unlock execution. Preserve terminal errors with partial evidence and JSON compatibility; progress reports attempts, not verified successes. Shell-owned progress survives navigation, and incomplete streams remain unknown outcomes requiring explicit journal refresh.
 
 Quick Review selected-detail loading supports opt-in NDJSON stages/counts with JSON compatibility; disconnects/observer failures cannot cancel reads or unlock early. Pending display metadata is optional/backward compatible and adds no reads. Dedupe places Execution summary below Status; prune displayed review groups only for exact requested keeper/loser live successes with all verification flags, preserving failed/uncertain/unattempted groups and partial evidence. Received-result fallback remains account scoped and is cleared on identity/scope changes.
+
+Album verification/recovery use albumMembership.ts: validate album identity and explicit membership; metadata-only v3 responses use fresh asset-filtered album queries. Never treat counts, missing/malformed fields or accepted add responses as membership proof. Malformed embedded assets must fail, not fall back. Preserve partial evidence and await started reads; old failed attempts require a read-only recheck, freshly verified explicit release, and a separate new dry-run/execution. No automatic replay.

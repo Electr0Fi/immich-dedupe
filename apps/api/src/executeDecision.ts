@@ -3,7 +3,8 @@ import type { AssetResponseDto } from "@immich/sdk";
 import { evaluateDuplicateGroup, evaluateConfiguredGroup } from "@immich-dedupe/rule-engine";
 import type { DuplicateDecision, DuplicateGroup, ExecutionFailureStage, ExecutionResult, ExecutionCheckpoint, RuleSet, ExecutionRunStage } from "@immich-dedupe/shared";
 import type { ImmichClient } from "./immichClient";
-import { readFreshPreflight, albumDetailSchema, type FreshPreflight } from "./freshPreflight";
+import { readFreshPreflight, type FreshPreflight } from "./freshPreflight";
+import { readAlbumMembership, AlbumMembershipError } from './albumMembership';
 export { assetSchema, albumDetailSchema, groupListSchema } from "./freshPreflight";
 
 const resolutionSchema = z.array(z.object({
@@ -84,8 +85,8 @@ export function createDecisionExecutor(
         stage = "album-verification";
         progress('verifying-albums');
         const checks = await Promise.allSettled(result.proposedAlbumIds.map(async (id) => {
-          const album = albumDetailSchema.parse(await client.getAlbumInfo({ id, withoutAssets: false }));
-          return album.id === id && album.assets.some((asset) => asset.id === keepId);
+          const album = await readAlbumMembership(client, id, [keepId]);
+          return album.assetIds.has(keepId);
         }));
         result.transferredAlbumIds = result.proposedAlbumIds.filter((_, index) => {
           const check = checks[index];
@@ -98,6 +99,8 @@ export function createDecisionExecutor(
             "Album transfer did not explicitly succeed; duplicate resolution was not called");
         }
         if (result.transferredAlbumIds.length !== result.proposedAlbumIds.length) {
+          const failedRead = checks.find((check) => check.status === 'rejected');
+          if (failedRead?.status === 'rejected' && failedRead.reason instanceof AlbumMembershipError) throw new AlbumMembershipError(`${failedRead.reason.message} Duplicate resolution was not called.`);
           throw new Error("Album membership could not be confirmed; duplicate resolution was not called");
         }
       }
@@ -106,8 +109,8 @@ export function createDecisionExecutor(
       stage = "album-verification";
       progress('verifying-albums');
       for (const id of result.skippedAlbumIds) {
-        const album = albumDetailSchema.parse(await client.getAlbumInfo({ id, withoutAssets: false }));
-        if (album.id !== id || !album.assets.some((asset) => asset.id === keepId)) {
+        const album = await readAlbumMembership(client, id, [keepId]);
+        if (!album.assetIds.has(keepId)) {
           throw new Error("Existing keeper album membership could not be confirmed");
         }
       }

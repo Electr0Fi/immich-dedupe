@@ -161,7 +161,7 @@ In Immich, open **Account Settings → API Keys** and edit or create the key con
 | `duplicate.read` | Duplicate previews and fresh membership checks (`GET /duplicates`) | Read/review |
 | `asset.read` | Metadata, sizes, safety checks and result verification (`GET /assets/:id`) | Read/review |
 | `asset.view` | Keeper/loser thumbnail images (`GET /assets/:id/thumbnail?size=thumbnail`) | Review images |
-| `album.read` | List albums, read memberships and verify preservation (`GET /albums`, `GET /albums/:id`) | Read/review |
+| `album.read` | List albums, read memberships and verify preservation (`GET /albums`, `GET /albums/:id`, and asset-filtered membership queries) | Read/review |
 | `albumAsset.create` | Add the keeper to missing loser albums (`PUT /albums/assets`) | Live cleanup |
 | `duplicate.delete` | Resolve the reviewed group and trash selected losers (`POST /duplicates/resolve`) | Live cleanup |
 
@@ -178,6 +178,10 @@ Sources: Immich v2.7.5 [thumbnail endpoint](https://github.com/immich-app/immich
 Both execution POST routes default to dry-run. Send literal JSON `"dryRun": false` to run live operations. Non-boolean modes and limits that are not positive safe integers return HTTP 400.
 
 Batch defaults are `scanLimit: 100` and `executeLimit: 10`; UI defaults are 100 and 5. Legacy `limit` supplies missing limits; explicit values take precedence independently.
+
+Album verification supports both older album responses with embedded assets and Immich v3.3.5 metadata-only responses. When assets are omitted, the app confirms membership with `GET /albums?assetId=…`; album counts and a successful add response alone are insufficient. This applies to new transfers, existing keeper memberships and recovery rechecks. Failed or malformed reads keep the group blocked and report an album-specific diagnostic. No additional API key permission is required beyond `album.read` for verification.
+
+If an earlier run added the keeper to an album but stopped with **Album membership could not be confirmed**, restart the API with the updated code and use **Review recovery → Recheck outcome**. If it reports **pair-intact**, use **Allow new attempt**, then prepare a new review and complete a new dry-run. Rechecking and releasing do not repeat album additions or resolve duplicates; previous journal evidence remains unchanged.
 
 Outcomes are `dry-run`, `succeeded`, `failed`, and `needs-verification`. Results include the failure stage, proposed albums, and confirmed transfers. A batch response includes `stoppedEarly` and `stopReason`. HTTP 200 does not mean every group succeeded. Post-resolution verification allows three read rounds one second apart; mutations are submitted at most once per attempt.
 

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { RecoveryAttempt, RecoveryAssessment, RuleSet } from "@immich-dedupe/shared";
 import { evaluateDuplicateGroup } from "@immich-dedupe/rule-engine";
-import { assetSchema, albumDetailSchema, groupListSchema } from "./executeDecision";
+import { assetSchema, groupListSchema } from "./executeDecision";
+import { readAlbumMembership } from './albumMembership';
 import { normalizeDuplicates } from "./normalizeDuplicates";
 import type { ImmichClient } from "./immichClient";
 import { readFreshPreflight } from "./freshPreflight";
@@ -28,13 +29,10 @@ export async function reconcileAttempt(client: ImmichClient, attempt: RecoveryAt
       const keeper = currentStateSchema.parse(rawKeeper), loser = currentStateSchema.parse(rawLoser);
       if (keeper.id !== attempt.keepAssetId || loser.id !== attempt.trashAssetId) throw new Error("Asset identity does not match the attempt");
       const groups = groupListSchema.parse(rawGroups);
-      const albums = await Promise.all(required.map(async (id) => {
-        const album = albumDetailSchema.parse(await client.getAlbumInfo({ id, withoutAssets: false }));
-        if (album.id !== id) throw new Error("Album identity changed");
-        return album;
-      }));
+      const albumReads = await Promise.allSettled(required.map((id) => readAlbumMembership(client, id, loser.isTrashed ? [keeper.id] : [keeper.id, loser.id])));
+      const albums = albumReads.map((read) => { if (read.status === 'rejected') throw read.reason; return read.value; });
       if (preflight?.kind === "preflight" && loser.isTrashed === true && loser.duplicateId === null && keeper.isTrashed === false &&
-          !groups.some((g) => g.duplicateId === attempt.groupId) && albums.every((album) => album.assets.some((a) => a.id === keeper.id))) {
+          !groups.some((g) => g.duplicateId === attempt.groupId) && albums.every((album) => album.assetIds.has(keeper.id))) {
         return { checkedAt: new Date().toISOString(), classification: "verified-resolved",
           message: "Resolution and required keeper album memberships are verified; no cleanup was repeated",
           evidence: ["Loser is trashed and unlinked", "Keeper is untrashed", "Original group is absent", "Required albums contain keeper"] };
@@ -59,7 +57,7 @@ export async function reconcileAttempt(client: ImmichClient, attempt: RecoveryAt
         const decision = evaluateDuplicateGroup(group);
         if (decision.status !== "auto-resolve" || decision.keepAssetId !== keeper.id || decision.trashAssetIds[0] !== loser.id) throw new Error("Fresh eligibility no longer supports the original selection");
       }
-      if (!albums.every((album) => album.assets.some((a) => a.id === keeper.id || a.id === loser.id))) throw new Error("Original album memberships are no longer accounted for");
+      if (!albums.every((album) => album.assetIds.has(keeper.id) || album.assetIds.has(loser.id))) throw new Error("Original album memberships are no longer accounted for");
       return { checkedAt: new Date().toISOString(), classification: "pair-intact",
         message: "The original pair is currently intact and eligible; explicit release is required before a new attempt",
         evidence: ["Same two assets remain in the group", "Same keeper/loser remain eligible", "Original album requirements are accounted for"] };

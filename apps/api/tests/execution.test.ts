@@ -137,7 +137,7 @@ for (const mode of ['absent', 'wrong-id', 'malformed', 'error']) {
       if (mode === 'error') throw new Error('Album inaccessible');
       if (mode === 'absent') value.assets = [];
       if (mode === 'wrong-id') value.id = 'wrong';
-      if (mode === 'malformed') Reflect.deleteProperty(value, 'assets');
+      if (mode === 'malformed') Reflect.set(value, 'assets', 'invalid');
       return value;
     };
     const result = await h.execute(input, decision, false);
