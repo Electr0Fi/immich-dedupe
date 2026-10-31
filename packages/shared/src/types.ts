@@ -4,6 +4,8 @@ export type AlbumMembership = {
 };
 
 export type AssetRecord = {
+  ruleMetadata?: import("./rules").RuleMetadata;
+  albumsKnown?: boolean;
   id: string;
   duplicateId: string;
   fileName: string;
@@ -153,11 +155,15 @@ export type RecoveryAttempt = {
 export type ExecutionScope = { apiUrl: string; accountId: string };
 export type ReviewedAsset = Pick<AssetRecord, "id" | "duplicateId" | "fileName" | "originalPath" | "checksum" | "assetType" | "width" | "height" | "fileSize" | "isEdited" | "isTrashed" | "isFavorite" | "isArchived" | "isOffline" | "livePhotoVideoId" | "isExternal" | "isInternal" | "albums">;
 export type ReviewedCandidate = {
+  ruleset?: import("./rules").RuleSet;
+  ruleAssets?: AssetRecord[];
   groupId: string; keepAsset: ReviewedAsset; trashAsset: ReviewedAsset; decision: DuplicateDecision;
   requiredAlbumIds: string[]; proposedAlbumIds: string[]; skippedAlbumIds: string[];
 };
-export type ReviewedPlanExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined" | "ineligible"; message: string; attemptIds: string[] };
+export type ReviewedPlanExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined" | "ineligible" | "unverified"; message: string; attemptIds: string[] };
 export type ReviewedPlan = {
+  ruleset?: import("./rules").RuleSet;
+  scan?: import("./scanning").ScanSnapshot;
   planId: string; scope: ExecutionScope; createdAt: string; expiresAt: string;
   scanLimit: number; executeLimit: number; fetchedGroups: number; totalGroups: number;
   candidates: ReviewedCandidate[]; excludedGroups: ReviewedPlanExclusion[];
@@ -169,6 +175,8 @@ export type QuickReviewCandidate = Omit<ReviewedCandidate, "keepAsset" | "trashA
 };
 export type QuickReviewExclusion = Omit<ReviewedPlanExclusion, "reason"> & { reason: ReviewedPlanExclusion["reason"] | "unverified" };
 export type QuickReview = {
+  ruleset?: import("./rules").RuleSet;
+  scan?: import("./scanning").ScanSnapshot;
   reviewId: string; scope: ExecutionScope; createdAt: string; expiresAt: string;
   scanLimit: number; executeLimit: number; fetchedGroups: number; totalGroups: number;
   candidates: QuickReviewCandidate[]; excludedGroups: QuickReviewExclusion[];
@@ -186,7 +194,7 @@ export type ReviewPreparationEvent =
   | { type: "progress"; progress: ReviewPreparationProgress }
   | { type: "result"; result: ReviewPreparationResult }
   | { type: "error"; status: number; code: string; error: string };
-export type CreateReviewedPlanRequest = { scanLimit?: number; executeLimit?: number };
+export type CreateReviewedPlanRequest = { scanLimit?: number; executeLimit?: number; scan?: { mode: "groups" | "candidates"; candidateTarget?: number } };
 export type ReviewedExecutionRequest = { selectedGroupIds: string[]; dryRun?: boolean };
 export type ReviewedPlanResponse = { ok: true; plan: ReviewedPlan };
 export type ChangedPlanGroup = { groupId: string; reasons: string[] };
@@ -228,3 +236,5 @@ export type RecoveryList = {
   offset: number;
   limit: number;
 };
+export * from "./rules";
+export * from "./scanning";

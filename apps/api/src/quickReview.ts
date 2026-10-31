@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { QuickReview, QuickReviewCandidate, QuickReviewExclusion, ReviewedCandidate } from '@immich-dedupe/shared';
-import { evaluateDuplicateGroup } from '@immich-dedupe/rule-engine';
+import type { QuickReview, QuickReviewCandidate, QuickReviewExclusion, ReviewedCandidate, RuleSet } from '@immich-dedupe/shared';
+import { evaluateDuplicateGroup, evaluateConfiguredGroup } from '@immich-dedupe/rule-engine';
 import { normalizeDuplicates } from './normalizeDuplicates';
 import { PLAN_CAPACITY, PLAN_TTL_MS, projectAsset, reviewedAssetSchema } from './reviewedPlan';
 
@@ -19,15 +19,16 @@ export const quickGroupListSchema = z.array(z.object({
     exifInfo: z.object({
       fileSizeInByte: z.union([z.number(), z.string()]).nullish().catch(null),
       exifImageWidth: number, exifImageHeight: number,
-    }).nullish().catch(null),
-  })),
+    }).passthrough().nullish().catch(null),
+  }).passthrough()),
 }));
 const quickAssetSchema = reviewedAssetSchema.omit({ albums: true }).strip();
 export function quickCandidate(candidate: ReviewedCandidate): QuickReviewCandidate {
   return { groupId: candidate.groupId, keepAsset: quickAssetSchema.parse(candidate.keepAsset),
-    trashAsset: quickAssetSchema.parse(candidate.trashAsset), decision: candidate.decision };
+    trashAsset: quickAssetSchema.parse(candidate.trashAsset), decision: candidate.decision,
+    ...(candidate.ruleset ? { ruleset: candidate.ruleset, ruleAssets: candidate.ruleAssets?.map((asset) => ({ ...asset, albums: [], albumsKnown: false })) } : {}) };
 }
-export function evaluateQuickGroup(raw: z.infer<typeof quickGroupListSchema>[number]): QuickReviewCandidate | QuickReviewExclusion {
+export function evaluateQuickGroup(raw: z.infer<typeof quickGroupListSchema>[number], ruleset?: RuleSet): QuickReviewCandidate | QuickReviewExclusion {
   const exclude = (message: string, reason: 'ineligible' | 'unverified' = 'ineligible'): QuickReviewExclusion => ({ groupId: raw.duplicateId, reason, message, attemptIds: [] });
   if (raw.assets.length !== 2) return exclude(`${raw.assets.length} ${raw.assets.length === 1 ? 'asset' : 'assets'} in group; current rule definitions only support exactly 2 assets per group.`);
   if (new Set(raw.assets.map((asset) => asset.id)).size !== 2) return exclude('The group contains repeated asset IDs; 2 distinct assets are required.');
@@ -49,11 +50,12 @@ export function evaluateQuickGroup(raw: z.infer<typeof quickGroupListSchema>[num
     if (original.livePhotoVideoId === undefined) missing.add('Live Photo linkage');
   }
   if (missing.size) return exclude(`Not verified in Quick Review: missing or invalid ${[...missing].join(', ')} in the duplicate response. Extra metadata reads were skipped.`, 'unverified');
-  const decision = evaluateDuplicateGroup(group);
-  if (decision.status !== 'auto-resolve' || decision.confidence !== 100 || !decision.keepAssetId || decision.trashAssetIds.length !== 1) return exclude(decision.reasons.join('; '));
+  const decision = ruleset ? evaluateConfiguredGroup(group, ruleset) : evaluateDuplicateGroup(group);
+  if (decision.status !== 'auto-resolve' || decision.confidence !== 100 || !decision.keepAssetId || decision.trashAssetIds.length !== 1) return exclude(decision.reasons.join('; '), 'outcome' in decision && decision.outcome === 'deferred' ? 'unverified' : 'ineligible');
   const keep = group.assets.find((asset) => asset.id === decision.keepAssetId)!;
   const trash = group.assets.find((asset) => asset.id === decision.trashAssetIds[0])!;
-  return { groupId: group.groupId, keepAsset: quickAssetSchema.parse(projectAsset(keep)), trashAsset: quickAssetSchema.parse(projectAsset(trash)), decision };
+  return { groupId: group.groupId, keepAsset: quickAssetSchema.parse(projectAsset(keep)), trashAsset: quickAssetSchema.parse(projectAsset(trash)), decision,
+    ...(ruleset ? { ruleset, ruleAssets: [keep, trash] } : {}) };
 }
 export function changedQuickCandidate(expected: QuickReviewCandidate, fresh: ReviewedCandidate): string[] {
   const actual = quickCandidate(fresh);
@@ -64,7 +66,18 @@ export function changedQuickCandidate(expected: QuickReviewCandidate, fresh: Rev
     if (before.checksum === null) after.checksum = null;
     if (JSON.stringify(before) !== JSON.stringify(after)) reasons.push(`${side === 'keepAsset' ? 'Keeper' : 'Loser'} metadata or selection changed since Quick Review`);
   }
-  if (JSON.stringify(expected.decision) !== JSON.stringify(actual.decision)) reasons.push('Rule decision changed since Quick Review');
+  if (expected.ruleset) {
+    if (expected.ruleset.revision !== fresh.ruleset?.revision || expected.decision.matchedRuleId !== actual.decision.matchedRuleId ||
+        expected.decision.keepAssetId !== actual.decision.keepAssetId || JSON.stringify(expected.decision.trashAssetIds) !== JSON.stringify(actual.decision.trashAssetIds)) reasons.push('Rule decision changed since Quick Review');
+    for (const before of expected.ruleAssets ?? []) {
+      const after = fresh.ruleAssets?.find((asset) => asset.id === before.id);
+      if (!after) { reasons.push('Rule inputs changed since Quick Review'); continue; }
+      const { albums: _albums, albumsKnown: _known, ...input } = before;
+      const { albums: _freshAlbums, albumsKnown: _freshKnown, ...freshInput } = after;
+      if (input.checksum === null) freshInput.checksum = null;
+      if (JSON.stringify(input) !== JSON.stringify(freshInput)) reasons.push('Rule inputs changed since Quick Review');
+    }
+  } else if (JSON.stringify(expected.decision) !== JSON.stringify(actual.decision)) reasons.push('Rule decision changed since Quick Review');
   return reasons;
 }
 export function createQuickReviewStore(now: () => number) {

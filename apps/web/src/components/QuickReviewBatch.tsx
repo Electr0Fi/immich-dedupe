@@ -14,6 +14,7 @@ export function QuickReviewBatch({ execution }: { execution: ExecutionState }) {
     <p>Rules were evaluated from the duplicate response only. Image details, thumbnails and albums were not fetched separately. Load selected details before dry-run or execution.</p>
     <p>{execution.selected.length} groups selected · {snapshot.candidates.length} provisional candidates · {snapshot.excludedGroups.length} excluded or unverified groups</p>
     <p>Checked {snapshot.fetchedGroups} of {snapshot.totalGroups} groups. Quick Review expires at {new Date(snapshot.expiresAt).toLocaleTimeString()}.</p>
+    {snapshot.ruleset && <p className="run-identifier">Rules revision: {snapshot.ruleset.revision}</p>}
     {execution.reviewError && <p className="error" role="alert">{execution.reviewError}</p>}
     {(execution.expired || execution.invalid) && <p className="error" role="alert">This Quick Review expired or is unavailable. Prepare a new review.</p>}
     {execution.selectionMessage && <p role="status">{execution.selectionMessage}</p>}
@@ -32,8 +33,9 @@ export function QuickReviewBatch({ execution }: { execution: ExecutionState }) {
       selection={<label className="review-selection"><input type="checkbox" aria-label={`Include group ${candidate.groupId}`} checked={execution.selected.includes(candidate.groupId)}
         disabled={disabled || (!execution.selected.includes(candidate.groupId) && execution.selected.length >= execution.limits.executeLimit)}
         onChange={(event) => execution.selectGroups(event.target.checked ? [...execution.selected, candidate.groupId] : execution.selected.filter((id) => id !== candidate.groupId))} />Include group {candidate.groupId}</label>}>
-      <p>Provisional keeper: {candidate.keepAsset.fileName} · External library</p>
-      <p>Provisional loser: {candidate.trashAsset.fileName} · Internal library</p>
+      <p>Provisional keeper: {candidate.keepAsset.fileName} · {candidate.keepAsset.originalPath ?? 'Unknown path'}</p>
+      <p>Provisional loser: {candidate.trashAsset.fileName} · {candidate.trashAsset.originalPath ?? 'Unknown path'}</p>
+      {'evidenceClass' in candidate.decision && <p>Comparison: {candidate.decision.evidenceClass === 'checksum' ? 'Checksum match' : 'Metadata match — this does not prove identical content'}</p>}
       <p>Rule: {candidate.decision.matchedRuleName}</p>
       <ul>{candidate.decision.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
       <p>Album memberships and proposed transfers have not been checked.</p>

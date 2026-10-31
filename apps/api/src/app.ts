@@ -6,7 +6,6 @@ import { AssetMediaSize } from "@immich/sdk";
 import { normalizeDuplicates } from "./normalizeDuplicates";
 import { createAssetInfoEnricher } from "./enrichWithAssetInfo";
 import { createAlbumEnricher } from "./enrichWithAlbums";
-import { evaluateDuplicateGroups } from "@immich-dedupe/rule-engine";
 import type {
   DuplicateDecision,
   DuplicateGroup,
@@ -20,6 +19,8 @@ import { z } from "zod";
 import { isExecutableDecision } from "./executePlan";
 import type { ExecutionLogEntry, ExecutionLog } from "./executionLog";
 import type { ImmichClient } from "./immichClient";
+import { createRulesStore, ruleSetDraftSchema, type RulesStore } from "./rulesStore";
+import { createScanStore, type ScanStore } from "./scanStore";
 
 export type AppDependencies = {
   immich: ImmichClient;
@@ -29,6 +30,8 @@ export type AppDependencies = {
   fetch: typeof globalThis.fetch;
   saveConnection: (updates: Record<string, string>) => void;
   now?: () => number;
+  rules?: RulesStore;
+  scan?: ScanStore;
 };
 
 export function createApp(dependencies: AppDependencies) {
@@ -37,7 +40,8 @@ export function createApp(dependencies: AppDependencies) {
   const { getExecutionLogPath, loadExecutionLog } = log;
   const enrichDuplicatesWithAssetInfo = createAssetInfoEnricher(immich);
   const enrichDuplicatesWithAlbums = createAlbumEnricher(immich);
-  const execution = createExecutionService({ client: immich, apiUrl: env.IMMICH_URL, journal: dependencies.journal, log, now: dependencies.now });
+  const execution = createExecutionService({ client: immich, apiUrl: env.IMMICH_URL, journal: dependencies.journal, log, now: dependencies.now,
+    rules: dependencies.rules ?? createRulesStore(), scan: dependencies.scan ?? createScanStore() });
   const app = express();
 
   app.use(cors());
@@ -499,7 +503,7 @@ export function createApp(dependencies: AppDependencies) {
       const withFileSize = await enrichDuplicatesWithAssetInfo(normalized);
       const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
 
-      const results = evaluateDuplicateGroups(withAlbums.groups);
+      const results = await execution.evaluateGroups(withAlbums.groups);
 
       const autoResolveCount = results.filter(
         (result) => result.status === "auto-resolve"
@@ -541,7 +545,7 @@ export function createApp(dependencies: AppDependencies) {
       const withFileSize = await enrichDuplicatesWithAssetInfo(normalized);
       const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
 
-      const decisions = evaluateDuplicateGroups(withAlbums.groups);
+      const decisions = await execution.evaluateGroups(withAlbums.groups);
 
       const executable = decisions.filter(isExecutableDecision);
       const items = buildExecutionPlanItems(withAlbums.groups, decisions);
@@ -592,6 +596,32 @@ export function createApp(dependencies: AppDependencies) {
     if (error instanceof ExecutionServiceError) return res.status(error.status).json({ ok: false, code: error.code, error: error.message, ...error.details });
     return res.status(503).json({ ok: false, error: error instanceof Error && error.name !== "ZodError" ? error.message : "Recovery state is unavailable" });
   }
+
+  app.get("/rules", async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    try { res.json(await execution.rulesState()); } catch (error) { executionError(res, error); }
+  });
+  for (const publish of [false, true]) app[publish ? "post" : "put"](publish ? "/rules/publish" : "/rules/draft", async (req, res) => {
+    const parsed = z.object({ ruleset: ruleSetDraftSchema }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid rules configuration", issues: parsed.error.issues });
+    try { res.json(await execution.saveRules(parsed.data.ruleset, publish)); } catch (error) { executionError(res, error); }
+  });
+  app.post("/rules/test", async (req, res) => {
+    const parsed = z.object({ ruleset: ruleSetDraftSchema, snapshotId: z.string().uuid() }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ ok: false, error: "Supply valid rules and a prepared review ID" });
+    try { res.json(await execution.testRules(parsed.data.snapshotId, parsed.data.ruleset)); } catch (error) { executionError(res, error); }
+  });
+  app.get("/execution/scan/pending", async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    try { res.json(await execution.scanPending()); } catch (error) { executionError(res, error); }
+  });
+  app.post("/execution/scan/prepare-pending", async (req, res) => {
+    try { res.json(await execution.preparePending(req.body)); } catch (error) { executionError(res, error); }
+  });
+  for (const recheck of [false, true]) app.post(recheck ? "/execution/scan/recheck-excluded" : "/execution/scan/reset", async (req, res) => {
+    if (!z.object({}).strict().safeParse(req.body ?? {}).success) return res.status(400).json({ ok: false, error: "Invalid scan request" });
+    try { res.json(await execution.resetScan(recheck)); } catch (error) { executionError(res, error); }
+  });
 
   app.post("/execution/log/clear", async (_req, res) => {
     try { res.json({ ok: true, ...await execution.clearLog() }); }
@@ -708,7 +738,7 @@ export function createApp(dependencies: AppDependencies) {
       const withFileSize = await enrichDuplicatesWithAssetInfo(normalized);
       const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
 
-      const decisions = evaluateDuplicateGroups(withAlbums.groups);
+      const decisions = await execution.evaluateGroups(withAlbums.groups);
 
       const executable = decisions.filter(isExecutableDecision);
 
@@ -757,7 +787,7 @@ export function createApp(dependencies: AppDependencies) {
       const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
 
       const group = withAlbums.groups[0];
-      const decision = evaluateDuplicateGroups([group])[0];
+      const decision = (await execution.evaluateGroups([group]))[0];
 
       if (!group || !decision) {
         return res.status(500).json({
@@ -817,7 +847,7 @@ export function createApp(dependencies: AppDependencies) {
     const normalized = normalizeDuplicates(selected);
     const withFileSize = await enrichDuplicatesWithAssetInfo(normalized);
     const withAlbums = await enrichDuplicatesWithAlbums(withFileSize);
-    return { groups: withAlbums.groups, decisions: evaluateDuplicateGroups(withAlbums.groups) };
+    return { groups: withAlbums.groups, decisions: await execution.evaluateGroups(withAlbums.groups) };
   }
 
   app.post("/execution/duplicates/:groupId", async (req, res) => {

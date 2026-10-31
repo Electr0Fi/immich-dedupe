@@ -216,3 +216,4 @@ export function evaluateDuplicateGroup(group: DuplicateGroup): DuplicateDecision
 export function evaluateDuplicateGroups(groups: DuplicateGroup[]): DuplicateDecision[] {
   return groups.map(evaluateDuplicateGroup);
 }
+export * from "./configurable";

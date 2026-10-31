@@ -9,7 +9,7 @@ export function WelcomeScreen() {
       <section className="card">
         <h2>Getting Started</h2>
         <p>
-          Configure your Immich connection in <strong>Settings</strong>, then head to{' '}
+          Configure your Immich connection in <strong>Settings</strong>, check your directory preferences in <strong>Rules</strong>, then head to{' '}
           <strong>Dedupe</strong> to review and execute safe duplicate resolutions.
         </p>
       </section>
@@ -18,6 +18,7 @@ export function WelcomeScreen() {
         <h2>How it works</h2>
         <ol className="welcome-steps">
           <li>Connect to your Immich instance via Settings.</li>
+          <li>Configure and publish comparison rules and directory keeper preferences in Rules.</li>
           <li>Prepare a review in Dedupe, expand group details to compare thumbnails and album changes, and include the groups you want.</li>
           <li>Dry-run the exact selection, then explicitly execute the reviewed batch.</li>
           <li>Monitor results in the Logs screen.</li>
@@ -28,6 +29,8 @@ export function WelcomeScreen() {
         <h2 id="current-functionality-title">Current Functionality</h2>
         <h3>Available now</h3>
         <ul>
+          <li>Configure comparison rules and directory keeper preferences in Rules. Checksum matching is enabled by default. Metadata presets require explicit acknowledgement because matching names, sizes or dimensions cannot prove identical image content.</li>
+          <li>Continue scanning additional groups with persistent progress: inspect a fixed number of groups or find a candidate target within an inspection budget. Unresolved candidates remain in a pending list across restarts; load their details to create a fresh review and complete a new dry-run.</li>
           <li>Enable Quick Review for faster duplicate-list-only rule checks without per-image, album or thumbnail requests. Missing data remains unverified. Load selected details to build a full review before dry-run and execution.</li>
           <li>Prepared group details start collapsed. Expand individual groups or use Expand All and Collapse All; selection checkboxes stay visible and disclosure changes preserve dry-run approval.</li>
           <li>Review duplicate groups already identified by Immich. Excluded groups explain unsupported asset counts, missing groups and inconsistent membership separately.</li>
@@ -42,14 +45,14 @@ export function WelcomeScreen() {
         <h3>Automatic cleanup requirements</h3>
         <ul>
           <li>Settings lists the API key permissions for connection checks, reviews, thumbnails and live cleanup. Thumbnails need asset.view; asset.read alone only permits metadata. Account identity checks, including dry-runs and recovery, require user.read.</li>
-          <li>Exactly two images: keep the larger external-library image over an internal copy with matching filenames and dimensions.</li>
+          <li>Exactly two unlinked images must satisfy the active published rules. Keep the copy in a preferred directory or use ordered metadata preferences; ties are excluded. Copies may come from the same source type.</li>
           <li>Favorites, archived/offline assets, edited/trashed assets, linked Live Photo images, videos, and assets with incomplete safety information are excluded.</li>
         </ul>
         <h3>Current limitations</h3>
         <ul>
-          <li>Manual review displays decisions only. Manual keeper selection, configurable rules, and the dedicated History view are not available.</li>
-          <li>Reviews expire after 15 minutes, are consumed by live requests, and require rebuilding after page reload or API restart. Legacy API live routes still use the older workflow until a later release.</li>
-          <li>Scans examine the first selected number of groups; resumable full-library scanning is not available.</li>
+          <li>Manual keeper selection and the dedicated History view are not available. Pixel comparison, videos and groups larger than two are unsupported. AI similarity alone cannot include a group.</li>
+          <li>Reviews expire after 15 minutes, are consumed by live requests, and require rebuilding after page reload, API restart or publishing changed rules. Saved scan progress does not restore execution approval. Legacy live API routes remain available and enforce active rules.</li>
+          <li>Immich returns its complete duplicate list without pagination. Continuing scans avoids repeatedly checking unchanged exclusions but still downloads that list. Metadata heuristics can include genuinely different images; enable them only if you accept that risk.</li>
           <li>Album protection covers memberships visible to your configured Immich account. Operations are not transactional and may leave partial changes.</li>
           <li>Use one API instance per data directory. Multi-process locking, automatic retry/resumption, rollback, and asset restoration are not available. Other unresolved attempts can still block an explicitly released pair.</li>
           <li>Only the latest run is restored, with no automatic polling or full History view. Missing details in older records remain unknown. Partial results that could not be saved survive navigation in this browser session, but cannot be restored after reload.</li>

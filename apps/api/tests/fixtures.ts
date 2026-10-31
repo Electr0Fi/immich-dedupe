@@ -10,6 +10,8 @@ import { normalizeDuplicates } from '../src/normalizeDuplicates';
 import { createExecutionLog } from '../src/executionLog';
 import { createExecutionJournal } from "../src/executionJournal";
 import type { ImmichClient } from '../src/immichClient';
+import type { ExecutionScope } from '@immich-dedupe/shared';
+import { createRulesStore } from '../src/rulesStore';
 
 const timestamp = '2026-01-01T00:00:00.000Z';
 
@@ -21,9 +23,17 @@ export function rawAsset(id: string, overrides: Partial<AssetResponseDto> = {}):
     hasMetadata: true, height: 2000, width: 3000, isArchived: false, isEdited: false,
     isFavorite: false, isOffline: false, isTrashed: false, originalFileName: 'photo.jpg',
     originalPath: '/external/photo.jpg', ownerId: 'owner', thumbhash: null,
-    type: AssetTypeEnum.Image, visibility: AssetVisibility.Timeline,
+    type: AssetTypeEnum.Image, visibility: AssetVisibility.Timeline, livePhotoVideoId: null,
     ...overrides,
   };
+}
+
+/** Explicit opt-in for historical behavior tests; production defaults stay checksum-only. */
+export async function heuristicTestRules(scope: ExecutionScope = { apiUrl: 'http://immich.invalid/api', accountId: 'test-user' }) {
+  const rules = createRulesStore(); const state = await rules.get(scope);
+  const preset = state.presets.find((rule) => rule.id === 'matching-metadata')!;
+  await rules.publish(scope, { schemaVersion: 1, rules: [{ ...preset, enabled: true, acknowledgeHeuristic: true }] });
+  return rules;
 }
 
 export function rawGroup(groupId = 'group'): DuplicateResponseDto {

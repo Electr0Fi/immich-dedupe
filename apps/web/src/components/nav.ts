@@ -1,4 +1,4 @@
-export type NavItemId = 'welcome' | 'dedupe' | 'history' | 'logs' | 'settings';
+export type NavItemId = 'welcome' | 'dedupe' | 'history' | 'rules' | 'logs' | 'settings';
 
 export type NavItem = {
   id: NavItemId;
@@ -8,6 +8,7 @@ export type NavItem = {
 export const NAV_ITEMS: NavItem[] = [
   { id: 'welcome', label: 'Welcome' },
   { id: 'dedupe', label: 'Dedupe' },
+  { id: 'rules', label: 'Rules' },
   { id: 'history', label: 'History' },
   { id: 'logs', label: 'Logs' },
   { id: 'settings', label: 'Settings' },

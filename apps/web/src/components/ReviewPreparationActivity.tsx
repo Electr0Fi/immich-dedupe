@@ -25,6 +25,7 @@ export function ReviewPreparationActivity({ execution }: { execution: ExecutionS
     {execution.cancelling && p && <p>Last check: {labels[p.stage]}</p>}
     {p && <p>{p.checkedGroups} {p.targetGroups === null ? 'groups checked' : `of ${p.targetGroups} groups checked`} · {p.eligibleGroups} {execution.quickReviewEnabled ? 'provisional candidates' : 'eligible'} · {p.excludedGroups} excluded</p>}
     {p?.targetGroups != null && p.targetGroups > 0 && <progress aria-label="Review groups checked" value={p.checkedGroups} max={p.targetGroups} />}
+    {execution.scanOptions.mode === 'candidates' && <p>Target: up to {execution.scanOptions.candidateTarget} {execution.quickReviewEnabled ? 'provisional' : 'fully checked'} candidates. Inspection budget: {execution.limits.scanLimit} groups.</p>}
     <p>Elapsed {elapsed}s. No Immich assets will be changed.</p>
     {waiting && <p>Still waiting for Immich during this check. The last reported stage is shown above.</p>}
   </div>;

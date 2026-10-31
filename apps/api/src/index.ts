@@ -5,10 +5,14 @@ import { createApp } from "./app";
 import { createExecutionJournal } from "./executionJournal";
 import { createExecutionLog } from "./executionLog";
 import { updateEnvFile } from "./settingsPersistence";
+import { createRulesStore } from "./rulesStore";
+import { createScanStore } from "./scanStore";
 
 const app = createApp({
   immich,
   journal: createExecutionJournal(path.join(__dirname, "..", "data", "execution-journal")),
+  rules: createRulesStore({ filePath: path.join(__dirname, "..", "data", "rules.json") }),
+  scan: createScanStore({ filePath: path.join(__dirname, "..", "data", "scan-progress.json") }),
   config: env,
   log: createExecutionLog(path.join(__dirname, "..", "data", "execution-log.json")),
   fetch: globalThis.fetch,

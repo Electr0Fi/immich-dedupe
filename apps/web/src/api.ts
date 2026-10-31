@@ -1,7 +1,7 @@
 import { ApiError, readResponse } from './apiResponse';
 export { ApiError } from './apiResponse';
 import { consumeReviewPreparation, validResult } from './reviewPreparationStream';
-import type { ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
+import type { ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
 export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
@@ -259,11 +259,13 @@ export function releaseAttempt(attemptId: string) {
   return apiPost<{ ok: boolean; attempt: RecoveryAttempt }>(`/execution/recovery/${encodeURIComponent(attemptId)}/release`, { confirm: true });
 }
 
-export async function prepareReviewedPlan(scanLimit: number, executeLimit: number, onProgress: (progress: ReviewPreparationProgress) => void): Promise<ReviewPreparationResult> {
+export type ScanRequest = ScanOptions;
+export type { ScanSummary } from '@immich-dedupe/shared';
+export async function prepareReviewedPlan(scanLimit: number, executeLimit: number, onProgress: (progress: ReviewPreparationProgress) => void, scan?: ScanRequest): Promise<ReviewPreparationResult> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/execution/plans`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ scanLimit, executeLimit }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ scanLimit, executeLimit, ...(scan ? { scan } : {}) }),
     });
   } catch { throw new Error('Cannot reach the Dedupe API. Check that the API is running and accessible from this browser, then try again'); }
   if (!response.ok || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
@@ -275,10 +277,10 @@ export async function prepareReviewedPlan(scanLimit: number, executeLimit: numbe
   if (terminal.type === 'error') throw new ApiError(terminal.status, terminal.error, undefined, terminal.code);
   return terminal.result;
 }
-export async function prepareQuickReview(scanLimit: number, executeLimit: number, onProgress: (progress: ReviewPreparationProgress) => void): Promise<ReviewPreparationResult> {
+export async function prepareQuickReview(scanLimit: number, executeLimit: number, onProgress: (progress: ReviewPreparationProgress) => void, scan?: ScanRequest): Promise<ReviewPreparationResult> {
   const path = '/execution/quick-reviews';
   let response: Response;
-  try { response = await fetch(`${API_BASE_URL}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ scanLimit, executeLimit }) }); }
+  try { response = await fetch(`${API_BASE_URL}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ scanLimit, executeLimit, ...(scan ? { scan } : {}) }) }); }
   catch { throw new Error('Cannot reach the Dedupe API. Check that the API is running and accessible from this browser, then try again'); }
   if (!response.ok || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
     const value = await readResponse<QuickReviewResponse>(response, { method: 'POST', path });
@@ -307,3 +309,22 @@ export function runReviewedPlan(planId: string, selectedGroupIds: string[], dryR
 export function getReviewedThumbnailUrl(planId: string, assetId: string) {
   return `${API_BASE_URL}/execution/plans/${encodeURIComponent(planId)}/assets/${encodeURIComponent(assetId)}/thumbnail`;
 }
+
+export function getRules() { return apiGet<RulesState & { ok: true }>('/rules'); }
+export async function saveRulesDraft(ruleset: RuleSetDraft) {
+  const path = '/rules/draft';
+  return readResponse<RulesState & { ok: true }>(await fetch(`${API_BASE_URL}${path}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ruleset }),
+  }), { method: 'PUT', path });
+}
+export function publishRules(ruleset: RuleSetDraft) { return apiPost<RulesState & { ok: true }>('/rules/publish', { ruleset }); }
+export function testRules(ruleset: RuleSetDraft, snapshotId: string) {
+  return apiPost<{ ok: true; results: ConfiguredDecision[] }>('/rules/test', { ruleset, snapshotId });
+}
+export type PendingCandidate = PendingScanCandidate;
+export function getPendingCandidates() { return apiGet<{ ok: true; pending: PendingCandidate[]; summary: ScanSummary }>('/execution/scan/pending'); }
+export function preparePendingCandidates(selectedGroupIds: string[], executeLimit: number) {
+  return apiPost<ReviewedPlanResponse>('/execution/scan/prepare-pending', { selectedGroupIds, executeLimit });
+}
+export function recheckExcludedGroups() { return apiPost<{ ok: true }>('/execution/scan/recheck-excluded', {}); }
+export function resetScanProgress() { return apiPost<{ ok: true }>('/execution/scan/reset', {}); }

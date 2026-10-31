@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { test, type TestContext } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { createApp, type AppDependencies } from '../src/app';
-import { fakeImmich, rawGroup, rawAsset, album, temporaryLog, executionHarness, temporaryJournal } from './fixtures';
+import { fakeImmich, rawGroup, rawAsset, album, temporaryLog, executionHarness, temporaryJournal, heuristicTestRules } from './fixtures';
 
 function dependencies(t: TestContext, overrides: Partial<AppDependencies> = {}): AppDependencies {
   const groups = [rawGroup('one'), rawGroup('two'), rawGroup('three')];
@@ -27,7 +27,9 @@ function dependencies(t: TestContext, overrides: Partial<AppDependencies> = {}):
 }
 
 async function serve(t: TestContext, deps: AppDependencies) {
-  const app = createApp(deps);
+  // Existing execution tests intentionally exercise the opt-in metadata preset.
+  const rules = deps.rules ?? await heuristicTestRules({ apiUrl: deps.config.IMMICH_URL, accountId: 'test-user' });
+  const app = createApp({ ...deps, rules });
   const server = app.listen(0, '127.0.0.1');
   t.after(() => new Promise<void>((resolve, reject) => {
     server.close((err) => err ? reject(err) : resolve());
@@ -242,7 +244,7 @@ test('protected assets are excluded consistently from analysis, plan and preview
   const analysis = await (await fetch(`${base}/analysis/duplicates?limit=1`)).json();
   const plan = await (await fetch(`${base}/execution/plan?scanLimit=1`)).json();
   const preview = await (await fetch(`${base}/execution/duplicates/one/preview`)).json();
-  assert.equal(analysis.autoResolveCount, 0); assert.equal(analysis.uncertainCount, 1);
+  assert.equal(analysis.autoResolveCount, 0); assert.equal(analysis.skipCount, 1);
   assert.equal(plan.items.length, 0); assert.equal(preview.executable, false);
   assert.deepEqual(h.mutations, []);
 });

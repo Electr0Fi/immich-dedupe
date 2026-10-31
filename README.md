@@ -6,6 +6,8 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ### Available now
 
+- Configure ordered comparison rules, presets and directory keeper preferences in **Rules**. Matching Immich checksums is enabled by default; metadata presets require explicit acknowledgement and activation. Draft edits take effect only after publication.
+- Continue scanning additional groups in fixed-count or candidate-target mode, with an inspection budget separate from Execute Limit. Scan progress and unresolved pending candidates survive API restarts. Loading pending details creates a fresh review requiring a new dry-run.
 - Optional **Quick Review** evaluates the duplicate-list response without per-image, album or thumbnail reads. Missing rule data remains unverified. Select provisional candidates and **Load selected details**, then dry-run and execute through the existing safety checks.
 
 - Review duplicate groups already identified by Immich. Excluded review groups explain unsupported asset counts, missing groups and inconsistent membership separately. Each prepared group starts with its details collapsed; expand groups individually or use Expand All and Collapse All. Selection checkboxes stay visible.
@@ -22,23 +24,45 @@ A local React/Express application for reviewing duplicate groups already identif
 ### Automatic cleanup requirements
 
 - Settings lists the API key permissions for connection checks, reviews, thumbnails and live cleanup. Thumbnails need `asset.view`; metadata access through `asset.read` alone is insufficient. See [Required Immich API key permissions](#required-immich-api-key-permissions).
-- Exactly two images: keep the larger external-library image over an internal copy with matching filenames and dimensions.
+- Exactly two unlinked images must satisfy the active published rules. Directory preferences choose which copy to keep; same-source pairs are supported. Unresolved keeper ties are excluded.
 - Favorites, archived/offline assets, edited/trashed assets, linked Live Photo images, videos, and assets with incomplete safety information are excluded.
-- Source classification uses configured-in-code path prefixes. Unknown paths cannot qualify. See `apps/api/src/classifySource.ts` for the current prefixes.
+- Configure directory preferences in Rules, for example keep `/photos/originals` over `/photos/copies`. Matching is case-sensitive and respects directory boundaries; the current internal/external labels do not determine eligibility.
 - Album additions must explicitly succeed and keeper memberships must be confirmed before resolution. Resolution must explicitly succeed, the loser must be confirmed trashed with its duplicate association cleared, and the keeper must remain untrashed.
 
 ### Current limitations
 
-- Manual review displays decisions only. Manual keeper selection, configurable rules, and the dedicated History view are not available.
-- Reviews expire after 15 minutes and require rebuilding after reload/restart or an accepted live request. Legacy API live routes retain their old behavior until PR7.
-- Scans examine the first selected number of groups; resumable full-library scanning is not available.
+- Manual keeper selection and the dedicated History view are not available. Videos, Live Photos, groups larger than two, original downloads and decoded-pixel comparisons are unsupported.
+- Reviews expire after 15 minutes and require rebuilding after reload/restart, publishing changed rules or an accepted live request. Legacy live API routes remain available and enforce active rules; they do not require a reviewed plan.
+- Immich returns its complete duplicate list without pagination. Continued scanning avoids repeated checks of unchanged exclusions but does not reduce that list response. Metadata heuristics cannot guarantee identical content; AI similarity alone never qualifies.
 - Album protection covers memberships visible to your configured Immich account. Operations are not transactional and may leave partial changes.
 - Use one API instance per data directory. Multi-process locking, automatic retry/resumption, rollback, and restoration are not available. Investigate uncertain outcomes and recheck them before explicitly releasing a pair.
 - Corrupt recovery storage disables execution and recovery-changing actions until repaired. The app never silently resets evidence or automatically promotes interrupted temporary files. Display logs are a separate audit view, not the recovery authority.
-- Connection changes require an API restart. Test and save writes configuration; Clear form clears only the form. Reset preview cache clears browser scan previews only. Confirmation is a session-only browser preference; backend safety rules are fixed, and configurable performance settings are not implemented.
+- Connection changes require an API restart. Test and save writes configuration; Clear form clears only the form. Reset preview cache clears browser scan previews only. Confirmation is a session-only browser preference; mandatory safety protections remain fixed, while comparison rules are edited in Rules. Configurable performance settings are not implemented.
 - This is a trusted local tool: the API has no authentication, allows cross-origin requests, and the connection-settings endpoint returns the saved API key. Do not expose it as a public service.
 - Only the latest run is restored; full History and automatic polling are not implemented. Older records show missing request/stop details as unknown. Unsaved partial-response evidence survives screen navigation during this browser session but cannot be restored after reload.
 - Packaged deployment and CI are not configured. Narrow screens use a horizontal navigation bar.
+
+## Configurable rules
+
+Use **Rules** to edit a draft, clone presets, enable or disable rules, change their order and choose keeper preferences. Conditions support filenames/stems/extensions, checksums, paths, MIME, sizes, dimensions, pixel count/aspect ratio, dates, selected EXIF fields and albums, with AND/OR groups. Operators are restricted to appropriate field types. Missing values stay unverified/deferred in both full and Quick Review; they cannot satisfy negative conditions or bypass mandatory protections. The first matching rule determines the outcome, and indeterminate earlier conditions defer the group.
+
+The default **Identical files** preset compares valid stored Immich checksums and consistent metadata. It does not download or independently hash originals. Its directory preferences are seeded from the previous path configuration; adjust them to your actual paths. Ranking ties exclude the group instead of choosing arbitrarily.
+
+**Matching name and dimensions** and **Resolution variants** presets are disabled initially, including on existing installations. Enable heuristic acknowledgement before activating metadata inclusion. These comparisons can include genuinely different images even when filenames match; the review distinguishes **Metadata match** from **Checksum match**. Similarity scores or thumbnails never establish content equality. Videos and groups larger than two remain excluded.
+
+Save draft preserves work without changing active decisions. Publish rules activates an immutable account/server-scoped revision and makes previous reviews and dry-run approval stale. Testing a draft against a prepared review includes all completed observed groups, including exclusions, without additional Immich reads or execution authorization. Mandatory protected-asset restrictions remain enforced for every rule and every execution route.
+
+## Continued scanning
+
+The WebUI offers **Inspect groups** (check up to the inspection budget) and **Find candidates** (stop at a candidate target or the inspection budget). Quick targets count provisional candidates; full targets count fully checked candidates. Execute Limit caps attempted eligible groups independently.
+
+Each preparation or continuation fetches Immich's complete duplicate list once. The local queue tracks IDs, membership and observed metadata rather than offsets in an unstable server order. New and changed groups are queued behind existing unseen work. Unchanged exclusions can be reused only when all rule dependencies are available in fresh list metadata. Missing data and transient read failures remain reconsiderable, and **Recheck excluded groups** explicitly queues exclusions again.
+
+Unresolved candidates stay in the visible pending list. Select pending groups and load their details to create a fresh full plan with current rules and safety checks; the saved proposal cannot execute or restore old approval. Dry-runs leave candidates pending. Successful execution and recovery quarantines remain authoritative. **Reset scan progress** clears advisory scan state, not logs, processed history or recovery evidence.
+
+Production startup stores rules in `apps/api/data/rules.json` and advisory progress in `apps/api/data/scan-progress.json`, scoped by normalized Immich URL and account. Completed observations are flushed every 25 groups and before a terminal/cancelled response; a crash may lose recent read-only progress. Reviews and approvals themselves remain in memory for 15 minutes. Never confuse scan persistence with execution resumption.
+
+API preparation requests optionally include `scan: { mode: "groups" }` or `scan: { mode: "candidates", candidateTarget: 100 }`, alongside `scanLimit` and `executeLimit`. Omit `scan` to retain the existing local first-N behavior. New rules/scan endpoints require the updated API: restart an idle API checkout and reload if a newer frontend reports a missing route, preserving all recovery files.
 
 ## Run locally
 
@@ -73,7 +97,7 @@ pnpm dev
 The API defaults to port 3001. Open the Vite URL printed in the terminal, normally `http://localhost:5173`. The servers can also run separately using `pnpm --filter api dev` and `pnpm --filter web dev`.
 
 1. Check the connection in Settings. Restart the API after saving connection changes and reload the browser to refresh the header status.
-2. Open Dedupe and choose a scan limit (groups examined) and execution limit (eligible attempts).
+2. Open Rules, check directory preferences and publish any changes. Then open Dedupe, choose a scan mode and inspection budget, and set Execute Limit separately.
 3. Click **Prepare review**. Follow live stages and counts, or click **Cancel review** to stop after outstanding reads settle and keep fully checked results. Compare the keeper/loser images, filenames, sources, dimensions, sizes, and named album changes. Group details start collapsed; use each group’s toggle or **Expand All** / **Collapse All** to inspect thumbnails, metadata, rule explanations and album actions. Use **Select first N** to select up to the review’s Execute Limit, or **Select All** to include all eligible groups in this prepared review. Select All raises Execute Limit when needed and requires a new dry-run; excluded groups remain unselectable.
 4. Click **Dry-run selected**. Changing the selection clears approval. Proposed album transfers have not been performed.
 5. Choose **Execute selected** after the dry-run passes. Confirm the selected group and album-addition counts. Execution rechecks current data and may stop if it changed.
@@ -83,9 +107,9 @@ The API defaults to port 3001. Open the Vite URL printed in the terminal, normal
 
 Under Prepare review in Dedupe, enable **Quick Review** to scan more groups without fetching full details for every image. It is off by default and remembered across screen navigation for this browser session. Changing mode or manually editing limits clears the current review and approval.
 
-Quick preparation makes one Immich duplicate-list request, takes the first Scan Limit groups, checks processed/quarantined exclusions and evaluates the existing rules using metadata already in that response. It skips additional group refetches, per-image requests, album reads and thumbnails. Counts come from the prepared result. Detailed Refresh previews and automatic detailed preview enrichment are disabled while this option is enabled. Reads already started before switching modes may finish; their late results are ignored.
+Quick preparation makes one Immich duplicate-list request, selects the next groups in the continuing scan queue, checks processed/quarantined exclusions and evaluates the active rules using metadata already in that response. It skips additional group refetches, per-image requests, album reads and thumbnails. Counts come from the prepared result. Detailed Refresh previews and automatic detailed preview enrichment are disabled while this option is enabled. Reads already started before switching modes may finish; their late results are ignored.
 
-Groups enter **Provisional candidates** only if available metadata satisfies every automatic rule. Missing/invalid sizes, dimensions, safety flags, media type, source/name information, group association or Live Photo linkage are listed as unverified, without fallback requests or assumptions that unknown states are safe. Unsupported group sizes and other exclusions retain specific reasons. Quick Review may identify fewer candidates than a full review when the duplicate response omits required data. Scanning still uses the first N groups, without pagination; Immich's duplicate-list response itself may remain large.
+Groups enter **Provisional candidates** only if available metadata satisfies every automatic rule. Missing/invalid safety information or data required by the active rule is listed as unverified, without fallback requests or assumptions that unknown states are safe. Album-dependent conditions remain unverified until full details are loaded. Unsupported group sizes and other exclusions retain specific reasons. Quick Review may identify fewer candidates than a full review when the duplicate response omits required data. The inspection budget bounds newly checked groups, and candidate mode may stop sooner when its target is reached; Immich's duplicate-list response itself may remain large.
 
 1. Select candidates with their checkboxes, Select first N or Select All. In quick results, Select All locally raises Execute Limit if necessary.
 2. Click **Load selected details**. The API verifies only this exact selection with fresh membership, image and album reads. Changed selections/metadata or new exclusions reject the entire upgrade, preserving quick results and explaining why. There are no replacement candidates or automatic retries.
@@ -93,7 +117,7 @@ Groups enter **Provisional candidates** only if available metadata satisfies eve
 
 Quick snapshots are scoped to the server/account, stored only in API memory for 15 minutes, with capacity 20 separately from full plans. They cannot be executed directly or used for image access. Successful detail loading creates a normal immutable full plan with its own 15-minute lifetime, containing exactly the selected groups and no inherited dry-run authorization. Keep/loser metadata and available checksums shown by the quick scan must still match; previously unfetched albums are treated as unknown until loaded. Reload/restart requires new preparation. Cancellation preserves completed quick results, which can still be selected for detail loading.
 
-API: `POST /execution/quick-reviews` accepts the same validated limits as full preparation and returns `{ ok, quickReview }`; with `Accept: application/x-ndjson` it streams progress and a terminal `{ status, plan: null, quickReview }` result. It shares the existing preparation cancellation endpoint. `POST /execution/quick-reviews/:reviewId/prepare-plan` accepts `{ selectedGroupIds, executeLimit }` and returns `{ ok, plan }`. Invalid selection is 400, busy/scope/stale-selection conflicts are 409, expired/missing quick snapshots are 410, and unavailable identity/storage/upstream reads are 503. Quick preparation and detail loading share the coordinator lock. Full review endpoints and journal versions are unchanged. If an updated frontend reports a missing quick endpoint, restart the current API checkout, reload and prepare again.
+API: `POST /execution/quick-reviews` accepts the same validated limits as full preparation and returns `{ ok, quickReview }`; with `Accept: application/x-ndjson` it streams progress and a terminal `{ status, plan: null, quickReview }` result. It shares the existing preparation cancellation endpoint. `POST /execution/quick-reviews/:reviewId/prepare-plan` accepts `{ selectedGroupIds, executeLimit }` and returns `{ ok, plan }`. Invalid selection is 400, busy/scope/stale-selection conflicts are 409, expired/missing quick snapshots are 410, and unavailable identity/storage/upstream reads are 503. Quick preparation and detail loading share the coordinator lock. Full plans pin their rules revision, and configurable reviewed runs use journal v4; historical v1–v3 records remain readable. If an updated frontend reports a missing quick endpoint, restart the current API checkout, reload and prepare again.
 
 ## Required Immich API key permissions
 
@@ -132,7 +156,7 @@ curl -X POST http://localhost:3001/execution/run \
   -d '{"scanLimit":10,"executeLimit":1,"dryRun":true}'
 ```
 
-Display logs live in `apps/api/data/execution-log.json`. Recovery records live separately under `apps/api/data/execution-journal/`, with one versioned JSON file per run. Both are ignored by Git. Preserve this directory: clearing display logs does not reset recovery or successful-history exclusions.
+Display logs live in `apps/api/data/execution-log.json`. Recovery records live separately under `apps/api/data/execution-journal/`, with journal v4 for configurable reviewed runs, v2 for legacy API runs and unchanged v1–v3 read support. Do not downgrade against a data directory containing newer journal versions. Both are ignored by Git. Preserve this directory: clearing display logs does not reset recovery or successful-history exclusions.
 
 At first execution or log clearing, recorded successful legacy group IDs are copied once into `legacy-exclusions.json` for the current connection. The old log is preserved and those exclusions are labeled legacy evidence, not verified attempts. Changing accounts or server URLs never imports the old log again into another library.
 
@@ -186,7 +210,7 @@ Dedupe distinguishes verified completed, simulated, failed, needs-verification, 
 
 `GET /execution/runs/latest` and `GET /execution/runs/:runId` return compact journal views scoped to the normalized server URL and current account. They do not create migration markers, write evidence, or mutate Immich. Phases are running, finished, or interrupted (no recorded completion and no active coordinator). Details of checkpoints remain in recovery detail. No full-history listing is added.
 
-Legacy runs use journal version 2; reviewed runs use version 3, retaining immutable plan evidence, selection order and the authorizing dry-run ID, plus the request context and terminal report. Versions 1 and 2 remain readable unchanged. **Older application releases cannot read version 3 files: do not downgrade against the same journal directory.** Preserve all evidence when upgrading or troubleshooting.
+Legacy API runs use journal version 2; configurable reviewed runs use version 4, retaining immutable rules, plan evidence, selection order and the authorizing dry-run ID, plus request context and terminal report. Historical versions 1–3 remain readable with their original semantics. **Older application releases cannot read version 4 files: do not downgrade against the same journal directory.** Preserve all evidence when upgrading or troubleshooting.
 
 Browser checks use Chromium and fake API responses only:
 
@@ -205,11 +229,11 @@ The WebUI uses **Prepare review → Dry-run selected → Execute selected**. Pla
 
 Only the selected groups run, in review order, with no replacement groups, manual keeper changes, or automatic retries. All selected groups are revalidated before the first mutation, then checked again individually. Changed metadata, checksums, memberships, album names/actions, or exclusions require a new review. Separate Immich API calls remain nontransactional and external races remain possible.
 
-`POST /execution/plans` accepts `scanLimit` and `executeLimit` (defaults 100/10). `POST /execution/plans/:planId/run` accepts `selectedGroupIds` and `dryRun` (default true). Live execution requires a fully recorded successful dry-run of that exact selection. Invalid input returns 400, busy/stale/unauthorized selections 409, unavailable/expired/consumed plans 410, and unavailable evidence or upstream reads 503.
+`POST /execution/plans` accepts `scanLimit` and `executeLimit` (defaults 100/10), plus the optional continued `scan` configuration described above. `POST /execution/plans/:planId/run` accepts `selectedGroupIds` and `dryRun` (default true). Live execution requires a fully recorded successful dry-run of that exact selection. Invalid input returns 400, busy/stale/unauthorized selections 409, unavailable/expired/consumed plans 410, and unavailable evidence or upstream reads 503.
 
 `GET /execution/plans/:planId/assets/:assetId/thumbnail` proxies only reviewed assets for the current connection, using backend credentials and no-store responses. Missing image permissions or unavailable thumbnails show placeholders without changing eligibility. No original images are requested.
 
-The WebUI uses planned execution exclusively. Legacy batch/single-group API routes remain available with their existing live behavior; enforcing reviewed execution on every live API route is deferred to PR7.
+The WebUI uses planned execution exclusively. Legacy batch/single-group API routes remain available without reviewed-plan authorization, but now enforce the active configured rules. Universal reviewed live execution remains deferred.
 
 Review preparation supports streamed progress through `POST /execution/plans` with `Accept: application/x-ndjson`; other callers retain the JSON response. Events report progress and one terminal result (completed/cancelled with a plan, or cancelled without a plan before scanning) or sanitized error. `POST /execution/preparations/:preparationId/cancel` requests cancellation without competing for the coordinator lock. The lock stays held until outstanding read batches settle and the partial plan is finalized; unfinished groups are omitted. Partial reviews retain the usual expiry, scope, dry-run authorization and fresh execution checks. Cancellation is confirmed only by the terminal preparation result, not by closing the connection. Reload/restart restoration, automatic reconnection, mutation cancellation and time-remaining estimates are not implemented.
 

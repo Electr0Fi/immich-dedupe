@@ -59,7 +59,7 @@ pnpm lint                       # Frontend ESLint only
 - Successful duplicate resolution results in:
   - `"isTrashed": true`
   - `"duplicateId": null`
-- Automatic cleanup is image-only and requires the larger external original plus matching names/dimensions. Protected or unknown metadata and Live Photo links prevent automatic resolution.
+- Automatic cleanup supports exactly two unlinked images under active published rules. Matching stored Immich checksums is the default; metadata inclusion needs explicit heuristic opt-in. Directory keeper preferences support same-source pairs; unknown required evidence and ties prevent automatic selection. Protected/unknown safety metadata, videos and Live Photos remain excluded.
 - Execution defaults to dry-run, rechecks fresh data, verifies album preservation and resolution, and stops batches on failed or uncertain outcomes. Never retry mutations automatically.
 - Keep the Welcome Current Functionality card, README.md, and PROJECT_GUIDE.md aligned whenever behavior changes.
 
@@ -81,3 +81,7 @@ pnpm lint                       # Frontend ESLint only
 - App factory: `apps/api/src/app.ts`; production startup: `apps/api/src/index.ts`. Inject dependencies for tests; never initialize the real SDK or touch production logs in tests.
 
 - Both execution routes use `executionService.ts`; persist checkpoints before mutations. Recovery authority lives under `apps/api/data/execution-journal/` and is never cleared with display logs. Recheck/release only read Immich. Locking supports one API process per data directory; automatic retries/restoration remain unsupported.
+
+- Rules drafts and immutable revisions live in the scoped lazy `rulesStore`; publishing invalidates old reviews/dry-runs. Preserve the frozen historical evaluator for journal v1–v3 validation; configurable reviewed runs write v4. Every production execution route enforces active rules, although legacy live routes remain available without reviewed-plan authorization.
+- Continued scans use a persistent advisory ID/fingerprint queue, not upstream offsets: Immich returns the complete duplicate list without pagination. Keep inspection budget, candidate target and Execute Limit distinct. Pending proposals require fresh full preparation and a new exact-selection dry-run; advisory reset never clears journal exclusions/quarantines.
+- Startup persists rules and advisory scan state as `apps/api/data/rules.json` and `scan-progress.json`. Keep IO injected/lazy and API keys out of both. Full preparation may reuse its one membership snapshot; execution must still refetch current membership/assets/albums.

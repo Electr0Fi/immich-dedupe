@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { AssetResponseDto } from "@immich/sdk";
-import { evaluateDuplicateGroup } from "@immich-dedupe/rule-engine";
-import type { DuplicateDecision, DuplicateGroup, ExecutionFailureStage, ExecutionResult, ExecutionCheckpoint } from "@immich-dedupe/shared";
+import { evaluateDuplicateGroup, evaluateConfiguredGroup } from "@immich-dedupe/rule-engine";
+import type { DuplicateDecision, DuplicateGroup, ExecutionFailureStage, ExecutionResult, ExecutionCheckpoint, RuleSet } from "@immich-dedupe/shared";
 import type { ImmichClient } from "./immichClient";
 import { readFreshPreflight, albumDetailSchema, type FreshPreflight } from "./freshPreflight";
 export { assetSchema, albumDetailSchema, groupListSchema } from "./freshPreflight";
@@ -16,7 +16,7 @@ export class CheckpointFailure extends Error {
 
 export function createDecisionExecutor(
   client: Pick<ImmichClient, "addAssetsToAlbums" | "getAssetInfo" | "resolveDuplicates" | "getAssetDuplicates" | "getAllAlbums" | "getAlbumInfo">,
-  options: { delay?: (ms: number) => Promise<void>; onCheckpoint?: (event: ExecutionCheckpoint) => Promise<void>; validatePreflight?: (fresh: FreshPreflight) => void } = {}
+  options: { ruleset?: RuleSet; delay?: (ms: number) => Promise<void>; onCheckpoint?: (event: ExecutionCheckpoint) => Promise<void>; validatePreflight?: (fresh: FreshPreflight) => void } = {}
 ) {
   const delay = options.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
@@ -42,14 +42,14 @@ export function createDecisionExecutor(
     try {
       const keepId = result.keepAssetId;
       const trashId = result.trashAssetId;
-      const expected = evaluateDuplicateGroup(group);
+      const expected = options.ruleset ? evaluateConfiguredGroup(group, options.ruleset) : evaluateDuplicateGroup(group);
       if (group.groupId !== decision.groupId || group.assets.length !== 2 || !keepId || !trashId || keepId === trashId ||
           decision.status !== "auto-resolve" || decision.confidence !== 100 || decision.trashAssetIds.length !== 1 ||
           expected.status !== "auto-resolve" || expected.keepAssetId !== keepId || expected.trashAssetIds[0] !== trashId) {
         throw new Error("Safety guard failed: invalid group or decision");
       }
 
-      const fresh = await readFreshPreflight(client, group.groupId, { keepId, trashId });
+      const fresh = await readFreshPreflight(client, group.groupId, { keepId, trashId }, undefined, { ruleset: options.ruleset });
       options.validatePreflight?.(fresh);
       result.proposedAlbumIds = fresh.proposedAlbumIds;
       result.skippedAlbumIds = fresh.skippedAlbumIds;

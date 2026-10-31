@@ -7,10 +7,15 @@ import { JournalError, isUnresolved, sameScope, type ExecutionJournal } from "./
 import { reconcileAttempt } from "./reconcileAttempt";
 import type { ImmichClient } from "./immichClient";
 import type { ExecutionLog } from "./executionLog";
-import { createReviewedPlanStore, reviewedCandidate, reviewedCandidateSchema, candidateToGroup, changedCandidate } from "./reviewedPlan";
+import { createReviewedPlanStore, reviewedCandidate, currentCandidateSchema, candidateToGroup, changedCandidate } from "./reviewedPlan";
 import { createQuickReviewStore, quickGroupListSchema, evaluateQuickGroup, changedQuickCandidate } from "./quickReview";
-import { PrepareQuickSelectionSchema } from "./executionRequest";
+import { PrepareQuickSelectionSchema, CreatePlanSchema } from "./executionRequest";
 import { readFreshPreflight, groupListSchema, PreflightSafetyError } from "./freshPreflight";
+import { evaluateConfiguredGroup, evaluateDuplicateGroup, createRuleSet } from "@immich-dedupe/rule-engine";
+import type { RuleSet, RuleSetDraft, CreateReviewedPlanRequest } from "@immich-dedupe/shared";
+import { RulesStoreError, type RulesStore } from "./rulesStore";
+import { ScanStoreError, type ScanStore } from "./scanStore";
+import { normalizeDuplicates } from "./normalizeDuplicates";
 
 export class ExecutionServiceError extends Error {
   constructor(public status: number, public code: string, message: string, public details: Record<string, unknown> = {}) { super(message); }
@@ -26,12 +31,24 @@ export function normalizeApiUrl(value: string) {
 export function createExecutionService(deps: {
   client: ImmichClient; apiUrl: string; journal: ExecutionJournal; log: ExecutionLog;
   delay?: (ms: number) => Promise<void>; now?: () => number;
+  rules?: RulesStore; scan?: ScanStore;
 }) {
   const { client, journal, log } = deps;
   const now = deps.now ?? Date.now;
   const plans = createReviewedPlanStore(now);
   const quickReviews = createQuickReviewStore(now);
+  const ruleSnapshots = new Map<string, { scope: ExecutionScope; expiresAt: number; groups: DuplicateGroup[] }>();
+  function saveRuleSnapshot(id: string, scope: ExecutionScope, groups: DuplicateGroup[]) {
+    for (const [key, entry] of ruleSnapshots) if (entry.expiresAt <= now()) ruleSnapshots.delete(key);
+    while (ruleSnapshots.size >= 40) ruleSnapshots.delete(ruleSnapshots.keys().next().value!);
+    ruleSnapshots.set(id, { scope, expiresAt: now() + 15 * 60 * 1000, groups: structuredClone(groups) });
+  }
   const preparations = new Map<string, { cancelled: boolean; finished: boolean; updatedAt: number }>();
+  async function activeRules(scope: ExecutionScope) { return (await deps.rules?.get(scope))?.active; }
+  async function assertRevision(scope: ExecutionScope, ruleset?: RuleSet) {
+    const active = await activeRules(scope);
+    if (active && active.revision !== ruleset?.revision) throw new ExecutionServiceError(409, "rules_changed", "Rules changed; prepare a new review and complete a new dry-run");
+  }
   let activeRunId: string | null = null;
   let lastScope: ExecutionScope | null = null;
   async function identity(): Promise<ExecutionScope> {
@@ -67,6 +84,7 @@ export function createExecutionService(deps: {
     } catch (error) {
       if (error instanceof ExecutionServiceError) throw error;
       if (error instanceof JournalError) throw new ExecutionServiceError(503, "journal_unavailable", error.message, { runId });
+      if (error instanceof RulesStoreError || error instanceof ScanStoreError) throw new ExecutionServiceError(error instanceof RulesStoreError ? error.status : 503, "configuration_unavailable", error.message);
       throw new ExecutionServiceError(500, "execution_error", error instanceof Error ? error.message : "Execution failed", { runId });
     } finally { activeRunId = null; }
   }
@@ -94,7 +112,7 @@ export function createExecutionService(deps: {
       runId: record.runId, startedAt: record.startedAt, finishedAt: record.finishedAt,
       phase: activeRunId === record.runId ? "running" : record.finishedAt ? "finished" : "interrupted",
       context: record.version !== 1 ? record.context : null, report: record.version !== 1 ? record.report : null,
-      ...(record.version === 3 ? { planId: record.review.planId, selectedCount: record.review.selectedGroupIds.length, authorizingDryRunId: record.review.authorizingDryRunId } : {}),
+      ...(record.version >= 3 && "review" in record ? { planId: record.review.planId, selectedCount: record.review.selectedGroupIds.length, authorizingDryRunId: record.review.authorizingDryRunId } : {}),
       attempts: record.attempts.map((attempt) => ({
         attemptId: attempt.attemptId, groupId: attempt.groupId, mode: attempt.mode,
         keepAssetId: attempt.keepAssetId, trashAssetId: attempt.trashAssetId, result: attempt.result,
@@ -126,7 +144,7 @@ export function createExecutionService(deps: {
     try {
       const base = { runId, scope, startedAt: new Date(now()).toISOString(), finishedAt: null, attempts: [], report: null,
         context: { dryRun: options.dryRun, scanLimit: options.scanLimit, executeLimit: options.executeLimit, source: options.singleGroupId ? "single" as const : "batch" as const, groupId: options.singleGroupId ?? null } };
-      journal.save(review ? { ...base, version: 3, review } : { ...base, version: 2 });
+      journal.save(review ? { ...base, version: review.candidates.some((candidate) => candidate.ruleset) ? 4 : 3, review } : { ...base, version: 2 });
       const policy = journal.exclusionIndex(scope);
       if (options.singleGroupId) {
         const excluded = exclusions(policy, { groupId: options.singleGroupId, assets: [] });
@@ -136,6 +154,8 @@ export function createExecutionService(deps: {
         }
       }
       const loaded = await load(); fetchedGroups = loaded.groups.length;
+      const ruleset = await activeRules(scope);
+      if (!review && ruleset) loaded.decisions = loaded.groups.map((group) => evaluateConfiguredGroup(group, ruleset));
       const byId = new Map(loaded.decisions.map((decision) => [decision.groupId, decision]));
       const candidates = loaded.groups.flatMap((group) => {
         const decision = byId.get(group.groupId);
@@ -162,13 +182,14 @@ export function createExecutionService(deps: {
         const record = journal.run(scope, runId)!;
         record.attempts.push(attempt); journal.save(record);
         const executor = createDecisionExecutor(client, {
+          ruleset,
           delay: deps.delay,
           validatePreflight: review ? (fresh) => {
             const index = journal.exclusionIndex(scope);
             index.blocked = index.blocked.filter((a) => a.attemptId !== attemptId);
             const excluded = exclusions(index, fresh.group);
             const original = review.candidates.find((c) => c.groupId === group.groupId)!;
-            const differences = changedCandidate(original, reviewedCandidate(fresh));
+            const differences = changedCandidate(original, reviewedCandidate(fresh, ruleset));
             if (excluded || differences.length) throw new PreflightSafetyError(`Reviewed data changed: ${excluded?.reason ?? differences.join("; ")}. Prepare a new review.`);
           } : undefined,
           onCheckpoint: async (event) => { journal.checkpoint(scope, attemptId, event); },
@@ -182,7 +203,12 @@ export function createExecutionService(deps: {
         }
         results.push(result);
         journal.finish(scope, attemptId, result);
-        if (result.outcome === "succeeded") policy.processed.add(group.groupId);
+        if (result.outcome === "succeeded") {
+          policy.processed.add(group.groupId);
+          // Advisory scheduling cannot change a durably verified execution outcome.
+          // Subsequent pending reads filter against journal authority even if this write fails.
+          try { deps.scan?.removePending(scope, [group.groupId]); } catch { /* Reconcile on the next scan. */ }
+        }
         try { log.appendExecutionLog({ timestamp: new Date().toISOString(), ...result }); }
         catch { stoppedEarly = true; stopReason = "Display log could not be written. The journal retains the result; batch stopped."; break; }
         if (result.outcome === "failed" || result.outcome === "needs-verification") {
@@ -225,8 +251,8 @@ export function createExecutionService(deps: {
       const excluded = exclusions(index, candidateToGroup(candidate));
       if (excluded) { changedGroups.push({ groupId: candidate.groupId, reasons: [excluded.reason] }); continue; }
       try {
-        const fresh = await readFreshPreflight(client, candidate.groupId, { keepId: candidate.keepAsset.id, trashId: candidate.trashAsset.id });
-        const reasons = changedCandidate(candidate, reviewedCandidate(fresh));
+        const fresh = await readFreshPreflight(client, candidate.groupId, { keepId: candidate.keepAsset.id, trashId: candidate.trashAsset.id }, undefined, { ruleset: candidate.ruleset });
+        const reasons = changedCandidate(candidate, reviewedCandidate(fresh, candidate.ruleset));
         if (reasons.length) changedGroups.push({ groupId: candidate.groupId, reasons });
       } catch (error) {
         if (!(error instanceof PreflightSafetyError) && !(error instanceof z.ZodError)) throw new ExecutionServiceError(503, "preflight_unavailable", "Fresh Immich data could not be verified; prepare a new review");
@@ -235,21 +261,24 @@ export function createExecutionService(deps: {
     }
     return changedGroups;
   }
-  async function prepareReview(options: { scanLimit: number; executeLimit: number }, onProgress?: (progress: ReviewPreparationProgress) => void, quick = false): Promise<ReviewPreparationResult> {
+  async function prepareReview(options: { scanLimit: number; executeLimit: number; scan?: CreateReviewedPlanRequest["scan"] }, onProgress?: (progress: ReviewPreparationProgress) => void, quick = false): Promise<ReviewPreparationResult> {
     const preparationId = randomUUID();
     const state = { cancelled: false, finished: false, updatedAt: now() };
     let checkedGroups = 0, targetGroups: number | null = null;
     const candidates: ReviewedCandidate[] = [], excludedGroups: ReviewedPlanExclusion[] = [];
     const quickCandidates: QuickReviewCandidate[] = [], quickExcluded: QuickReviewExclusion[] = [];
+    const observedGroups: DuplicateGroup[] = [];
     function progress(stage: ReviewPreparationStage) {
       // Reporting is observational: a disconnected/failed consumer cannot stop the coordinator.
       try { onProgress?.({ preparationId, stage, checkedGroups, targetGroups, eligibleGroups: quick ? quickCandidates.length : candidates.length, excludedGroups: quick ? quickExcluded.length : excludedGroups.length }); } catch { /* Ignore observer failures. */ }
     }
     function checkCancelled() { if (state.cancelled) throw new PreparationCancelled(); }
     return exclusive(async (_, scope) => {
-      const parsed = z.object({ scanLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), executeLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).safeParse(options);
+      const parsed = CreatePlanSchema.safeParse(options);
       if (!parsed.success) throw new ExecutionServiceError(400, "invalid_plan", "Invalid review limits");
       let totalGroups = 0;
+      const ruleset = await activeRules(scope);
+      const scanning = !!options.scan && !!deps.scan;
       try {
         checkCancelled();
         progress("fetching-groups");
@@ -259,7 +288,7 @@ export function createExecutionService(deps: {
           if (quick) throw new ExecutionServiceError(503, "preflight_unavailable", "Immich duplicate groups could not be loaded for Quick Review");
           throw error;
         }
-        const quickParsed = quick ? quickGroupListSchema.safeParse(raw) : null;
+        const quickParsed = quick || scanning || ruleset ? quickGroupListSchema.safeParse(raw) : null;
         if (quickParsed && !quickParsed.success) throw new ExecutionServiceError(503, "preflight_unavailable", "Immich returned invalid duplicate group data; no Quick Review was prepared");
         const quickGroups = quickParsed?.success ? quickParsed.data : null;
         const groups = quickGroups ?? groupListSchema.parse(raw);
@@ -268,17 +297,56 @@ export function createExecutionService(deps: {
         totalGroups = groups.length; targetGroups = selected.length;
         checkCancelled();
         const index = journal.exclusionIndex(scope);
-        for (const group of selected) {
+        if (scanning) {
+          const normalized = normalizeDuplicates(quickGroups!).groups;
+          normalized.forEach((group, gi) => group.assets.forEach((asset, ai) => {
+            const value = quickGroups![gi].assets[ai].exifInfo?.fileSizeInByte;
+            const size = value == null || (typeof value === "string" && !value.trim()) ? NaN : Number(value);
+            asset.fileSize = Number.isFinite(size) && size > 0 ? size : null;
+            // Missing linkage must stay visible to the advisory fingerprint.
+            if (quickGroups![gi].assets[ai].livePhotoVideoId === undefined) asset.ruleMetadata = { ...asset.ruleMetadata, missingLivePhotoLink: 1 };
+          }));
+          await deps.scan!.begin(scope, ruleset?.revision ?? "legacy-1", normalized, {
+            blockedGroupIds: [...index.processed, ...index.legacy, ...index.blocked.map((attempt) => attempt.groupId)],
+            blockedAssetIds: index.blocked.flatMap((attempt) => [attempt.keepAssetId, attempt.trashAssetId].filter((id): id is string => id !== null)),
+          });
+          targetGroups = Math.min(options.scanLimit, deps.scan!.get(scope).summary.remainingGroups);
+        }
+        const rawById = new Map(groups.map((group) => [group.duplicateId, group]));
+        for (let position = 0; position < options.scanLimit; position++) {
+          if (options.scan?.mode === "candidates" && (quick ? quickCandidates.length : candidates.length) >= options.scan.candidateTarget!) break;
+          const next = scanning ? deps.scan!.next(scope) : null;
+          const group = scanning ? next && rawById.get(next.groupId) : selected[position];
+          if (!group) break;
           checkCancelled();
+          if (quickGroups) {
+            const rawGroup = quickGroups.find((item) => item.duplicateId === group.duplicateId)!;
+            const observed = normalizeDuplicates([rawGroup]).groups[0];
+            observed.assets.forEach((asset, index) => {
+              const size = rawGroup.assets[index].exifInfo?.fileSizeInByte;
+              const parsed = size == null || (typeof size === "string" && !size.trim()) ? NaN : Number(size);
+              asset.fileSize = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+            });
+            observedGroups.push(observed);
+          }
           if (!quick) progress("checking-membership");
           const excluded = exclusions(index, { groupId: group.duplicateId, assets: group.assets });
-          if (quickGroups) {
+          if (quick) {
             if (excluded) quickExcluded.push({ ...excluded, message: `Excluded: ${excluded.reason}` });
             else {
-              const result = evaluateQuickGroup(quickGroups[checkedGroups]);
+              const result = evaluateQuickGroup(quickGroups!.find((item) => item.duplicateId === group.duplicateId)!, ruleset);
               if ('keepAsset' in result) quickCandidates.push(result); else quickExcluded.push(result);
             }
+            if (scanning && !excluded) {
+              const candidate = quickCandidates.find((item) => item.groupId === group.duplicateId);
+              const exclusion = quickExcluded.find((item) => item.groupId === group.duplicateId);
+              deps.scan!.record(scope, group.duplicateId, candidate ? { status: "eligible", reason: candidate.decision.reasons.join("; "), keepAssetId: candidate.keepAsset.id, trashAssetId: candidate.trashAsset.id,
+                comparisonClass: "evidenceClass" in candidate.decision ? String(candidate.decision.evidenceClass) : "metadata" } : {
+                status: exclusion?.reason === "unverified" ? "deferred" : "excluded", reason: exclusion?.message ?? "Excluded", cacheable: exclusion?.reason !== "unverified",
+              }, { deferSave: true });
+            }
             checkedGroups++;
+            if (scanning && checkedGroups % 25 === 0) deps.scan!.flush();
             progress("evaluating-rules");
             // Yield to HTTP cancellation requests without adding per-group network reads.
             if (checkedGroups % 25 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -287,31 +355,47 @@ export function createExecutionService(deps: {
           if (excluded) excludedGroups.push({ ...excluded, message: `Excluded: ${excluded.reason}` });
           else {
             try {
-              const fresh = await readFreshPreflight(client, group.duplicateId, undefined, { checkCancelled, stage: progress });
-              const candidate = reviewedCandidate(fresh);
-              reviewedCandidateSchema.parse(candidate);
+              const fresh = await readFreshPreflight(client, group.duplicateId, undefined, { checkCancelled, stage: progress }, { ruleset, ...(ruleset ? { memberships: groups } : {}) });
+              const candidate = reviewedCandidate(fresh, ruleset);
+              currentCandidateSchema.parse(candidate);
               checkCancelled();
               candidates.push(candidate);
+              const observedIndex = observedGroups.findIndex((item) => item.groupId === group.duplicateId);
+              if (observedIndex >= 0) observedGroups[observedIndex] = fresh.group;
             } catch (error) {
               if (error instanceof PreparationCancelled) throw error;
               if (!(error instanceof PreflightSafetyError)) throw new ExecutionServiceError(503, "preflight_unavailable", "Fresh Immich data could not be verified; no review was prepared");
               checkCancelled();
-              excludedGroups.push({ groupId: group.duplicateId, reason: "ineligible", message: error.message, attemptIds: [] });
+              excludedGroups.push({ groupId: group.duplicateId, reason: error.classification === "deferred" ? "unverified" : "ineligible", message: error.message, attemptIds: [] });
             }
           }
+          if (scanning && !excluded) {
+            const candidate = candidates.find((item) => item.groupId === group.duplicateId);
+            deps.scan!.record(scope, group.duplicateId, candidate ? { status: "eligible", reason: candidate.decision.reasons.join("; "), keepAssetId: candidate.keepAsset.id, trashAssetId: candidate.trashAsset.id,
+              comparisonClass: "evidenceClass" in candidate.decision ? String(candidate.decision.evidenceClass) : "metadata" } : {
+              status: excludedGroups.find((item) => item.groupId === group.duplicateId)?.reason === "unverified" ? "deferred" : "excluded", reason: excludedGroups.find((item) => item.groupId === group.duplicateId)?.message ?? "Excluded", cacheable: false,
+            }, { deferSave: true });
+          }
           checkedGroups++;
+          if (scanning && checkedGroups % 25 === 0) deps.scan!.flush();
           progress("checking-membership");
         }
       } catch (error) { if (!(error instanceof PreparationCancelled)) throw error; }
+      finally { if (scanning) deps.scan!.flush(); }
       const status = state.cancelled ? "cancelled" as const : "completed" as const;
       progress("finalizing");
+      const scan = scanning ? deps.scan!.get(scope) : undefined;
+      if (scan) scan.preparation = { mode: options.scan!.mode, checkedThisRequest: checkedGroups, foundThisRequest: quick ? quickCandidates.length : candidates.length,
+        stopReason: state.cancelled ? "cancelled" : options.scan?.mode === "candidates" && (quick ? quickCandidates.length : candidates.length) >= options.scan.candidateTarget! ? "target-reached" : scan.summary.remainingGroups === 0 ? "snapshot-exhausted" : "inspection-budget" };
       if (quick) {
-        const quickReview = targetGroups === null ? null : quickReviews.put({ scope, ...options, fetchedGroups: checkedGroups, totalGroups,
+        const quickReview = targetGroups === null ? null : quickReviews.put({ scope, ...(ruleset ? { ruleset } : {}), ...(scan ? { scan } : {}), scanLimit: options.scanLimit, executeLimit: options.executeLimit, fetchedGroups: checkedGroups, totalGroups,
           candidates: quickCandidates, excludedGroups: quickExcluded, preparation: { status, checkedGroups, targetGroups } });
+        if (quickReview) saveRuleSnapshot(quickReview.reviewId, scope, observedGroups.slice(0, checkedGroups));
         return { status, plan: null, quickReview };
       }
-      const plan = targetGroups === null ? null : plans.put({ scope, ...options, fetchedGroups: checkedGroups, totalGroups, candidates, excludedGroups,
+      const plan = targetGroups === null ? null : plans.put({ scope, ...(ruleset ? { ruleset } : {}), ...(scan ? { scan } : {}), scanLimit: options.scanLimit, executeLimit: options.executeLimit, fetchedGroups: checkedGroups, totalGroups, candidates, excludedGroups,
         preparation: { status, checkedGroups, targetGroups } });
+      if (plan) saveRuleSnapshot(plan.planId, scope, observedGroups.slice(0, checkedGroups));
       return { status, plan };
     }, (stage) => {
       if (!preparations.has(preparationId)) {
@@ -324,15 +408,85 @@ export function createExecutionService(deps: {
   }
   return {
     readRun,
+    async evaluateGroups(groups: DuplicateGroup[]) {
+      const ruleset = await activeRules(await identity());
+      return groups.map((group) => ruleset ? evaluateConfiguredGroup(group, ruleset) : evaluateDuplicateGroup(group));
+    },
+    rulesState() { return exclusive(async (_, scope) => {
+      if (!deps.rules) throw new ExecutionServiceError(503, "rules_unavailable", "Rule configuration is unavailable");
+      return { ok: true as const, ...await deps.rules.get(scope) };
+    }); },
+    saveRules(draft: RuleSetDraft, publish = false) { return exclusive(async (_, scope) => {
+      if (!deps.rules) throw new ExecutionServiceError(503, "rules_unavailable", "Rule configuration is unavailable");
+      const state = publish ? await deps.rules.publish(scope, draft) : await deps.rules.saveDraft(scope, draft);
+      // Revision checks reject old plans even if a browser keeps their IDs.
+      return { ok: true as const, ...state };
+    }); },
+    testRules(snapshotId: string, draft: RuleSetDraft) { return exclusive(async (_, scope) => {
+      const plan = plans.get(snapshotId)?.plan;
+      const quick = quickReviews.get(snapshotId);
+      const snapshot = plan ?? quick;
+      if (!snapshot || !sameScope(scope, snapshot.scope)) throw new ExecutionServiceError(410, "snapshot_unavailable", "Prepare a review for this connection before testing rules");
+      const ruleset = createRuleSet(draft);
+      const observed = ruleSnapshots.get(snapshotId);
+      if (observed && observed.expiresAt > now() && sameScope(scope, observed.scope)) return { ok: true as const, results: observed.groups.map((group) => evaluateConfiguredGroup(group, ruleset)) };
+      return { ok: true as const, results: snapshot.candidates.map((candidate) => evaluateConfiguredGroup(candidateToGroup({ ...candidate,
+        keepAsset: { ...candidate.keepAsset, albums: "albums" in candidate.keepAsset ? candidate.keepAsset.albums : [] },
+        trashAsset: { ...candidate.trashAsset, albums: "albums" in candidate.trashAsset ? candidate.trashAsset.albums : [] },
+      }), ruleset)) };
+    }); },
+    scanPending() { return exclusive(async (_, scope) => {
+      const snapshot = deps.scan?.get(scope);
+      const ruleset = await activeRules(scope);
+      const policy = journal.exclusionIndex(scope);
+      const pending = (snapshot?.pending ?? []).filter((item) => (!ruleset || item.rulesetRevision === ruleset.revision) &&
+        !exclusions(policy, { groupId: item.groupId, assets: [{ id: item.keepAssetId }, { id: item.trashAssetId }] }));
+      const summary = snapshot?.summary;
+      if (summary) {
+        summary.pendingCandidates = pending.length;
+        if (ruleset && summary.rulesetRevision !== ruleset.revision) Object.assign(summary, {
+          rulesetRevision: ruleset.revision, visitedGroups: 0, excludedGroups: 0, deferredGroups: 0,
+          remainingGroups: summary.totalGroups - summary.blockedGroups,
+        });
+      }
+      return { ok: true as const, pending, summary };
+    }); },
+    resetScan(recheck = false) { return exclusive(async (_, scope) => {
+      if (!deps.scan) throw new ExecutionServiceError(503, "scan_unavailable", "Scan progress is unavailable");
+      const snapshot = recheck ? deps.scan.recheckExcluded(scope) : deps.scan.reset(scope);
+      return { ok: true as const, ...snapshot };
+    }); },
+    preparePending(request: unknown) { return exclusive(async (_, scope) => {
+      const parsed = PrepareQuickSelectionSchema.safeParse(request);
+      if (!parsed.success || !deps.scan) throw new ExecutionServiceError(400, "invalid_selection", "Select pending groups within a positive Execute Limit");
+      const { selectedGroupIds, executeLimit } = parsed.data;
+      if (selectedGroupIds.length > executeLimit) throw new ExecutionServiceError(400, "invalid_selection", "Selection exceeds Execute Limit");
+      const ruleset = await activeRules(scope), pending = deps.scan.getPending(scope), index = journal.exclusionIndex(scope);
+      const candidates: ReviewedCandidate[] = [];
+      for (const groupId of selectedGroupIds) {
+        const proposal = pending.find((item) => item.groupId === groupId);
+        if (!proposal || (ruleset && proposal.rulesetRevision !== ruleset.revision)) throw new ExecutionServiceError(409, "pending_changed", "Pending candidates changed; continue scanning to refresh them");
+        if (exclusions(index, { groupId, assets: [{ id: proposal.keepAssetId }, { id: proposal.trashAssetId }] })) throw new ExecutionServiceError(409, "group_excluded", "A selected pending candidate is processed or quarantined");
+        try {
+          const fresh = await readFreshPreflight(client, groupId, { keepId: proposal.keepAssetId, trashId: proposal.trashAssetId }, { checkCancelled() {}, stage() {} }, { ruleset });
+          const candidate = reviewedCandidate(fresh, ruleset);
+          currentCandidateSchema.parse(candidate); candidates.push(candidate);
+        } catch (error) {
+          if (error instanceof PreflightSafetyError || error instanceof z.ZodError) throw new ExecutionServiceError(409, "pending_changed", "A selected pending candidate changed; prepare a new review");
+          throw new ExecutionServiceError(503, "preflight_unavailable", "Pending candidate details could not be verified; pending results were preserved");
+        }
+      }
+      return { ok: true as const, plan: plans.put({ scope, ruleset, scanLimit: candidates.length, executeLimit, fetchedGroups: candidates.length, totalGroups: deps.scan.get(scope).summary.totalGroups, candidates, excludedGroups: [] }) };
+    }); },
     run(options: ExecutionOptions, load: () => Promise<LoadedGroups>) {
       return exclusive((runId, scope) => runLocked(runId, scope, options, load));
     },
-    async preparePlan(options: { scanLimit: number; executeLimit: number }) {
+    async preparePlan(options: { scanLimit: number; executeLimit: number; scan?: CreateReviewedPlanRequest["scan"] }) {
       const result = await prepareReview(options);
       return { ok: true as const, plan: result.plan! };
     },
     preparePlanStream: prepareReview,
-    prepareQuickReview(options: { scanLimit: number; executeLimit: number }, onProgress?: (progress: ReviewPreparationProgress) => void) {
+    prepareQuickReview(options: { scanLimit: number; executeLimit: number; scan?: CreateReviewedPlanRequest["scan"] }, onProgress?: (progress: ReviewPreparationProgress) => void) {
       return prepareReview(options, onProgress, true);
     },
     prepareQuickSelection(reviewId: string, request: unknown) {
@@ -342,6 +496,7 @@ export function createExecutionService(deps: {
         const snapshot = quickReviews.get(reviewId);
         if (!snapshot) throw new ExecutionServiceError(410, "quick_review_unavailable", "Quick Review expired or is unavailable; prepare a new review");
         if (!sameScope(snapshot.scope, scope)) throw new ExecutionServiceError(409, "plan_scope_changed", "The Immich connection changed; prepare a new review");
+        await assertRevision(scope, snapshot.ruleset);
         const { selectedGroupIds, executeLimit } = parsed.data;
         const selected = snapshot.candidates.filter((candidate) => selectedGroupIds.includes(candidate.groupId));
         if (selected.length !== selectedGroupIds.length || selected.length > executeLimit) throw new ExecutionServiceError(400, "invalid_selection", "Select only provisional candidates within Execute Limit");
@@ -351,9 +506,9 @@ export function createExecutionService(deps: {
           if (excluded) { changedGroups.push({ groupId: expected.groupId, reasons: [excluded.reason] }); continue; }
           try {
             // Use preparation read batching so failures also await all started reads before unlocking.
-            const fresh = await readFreshPreflight(client, expected.groupId, { keepId: expected.keepAsset.id, trashId: expected.trashAsset.id }, { checkCancelled() {}, stage() {} });
-            const candidate = reviewedCandidate(fresh);
-            reviewedCandidateSchema.parse(candidate);
+            const fresh = await readFreshPreflight(client, expected.groupId, { keepId: expected.keepAsset.id, trashId: expected.trashAsset.id }, { checkCancelled() {}, stage() {} }, { ruleset: snapshot.ruleset });
+            const candidate = reviewedCandidate(fresh, snapshot.ruleset);
+            currentCandidateSchema.parse(candidate);
             const reasons = changedQuickCandidate(expected, candidate);
             if (reasons.length) changedGroups.push({ groupId: expected.groupId, reasons }); else candidates.push(candidate);
           } catch (error) {
@@ -362,7 +517,7 @@ export function createExecutionService(deps: {
           }
         }
         if (changedGroups.length) throw new ExecutionServiceError(409, "plan_changed", "Selected quick results changed; prepare a new review", { changedGroups });
-        return { ok: true as const, plan: plans.put({ scope, scanLimit: snapshot.scanLimit, executeLimit, fetchedGroups: candidates.length,
+        return { ok: true as const, plan: plans.put({ scope, ruleset: snapshot.ruleset, scanLimit: snapshot.scanLimit, executeLimit, fetchedGroups: candidates.length,
           totalGroups: snapshot.totalGroups, candidates, excludedGroups: [] }) };
       });
     },
@@ -372,9 +527,10 @@ export function createExecutionService(deps: {
         if (!entry) throw new ExecutionServiceError(410, "plan_unavailable", "Review expired or is unavailable");
         if (!sameScope(entry.plan.scope, scope)) throw new ExecutionServiceError(409, "plan_scope_changed", "The Immich connection changed");
         const plan = entry.plan;
+        await assertRevision(scope, plan.ruleset);
         // Keep the reviewed snapshot and its deadline; never carry dry-run authorization to a new plan.
         return { ok: true as const, plan: plans.put({
-          scope: plan.scope, scanLimit: plan.scanLimit, executeLimit: Math.max(plan.executeLimit, plan.candidates.length),
+          scope: plan.scope, ruleset: plan.ruleset, scan: plan.scan, scanLimit: plan.scanLimit, executeLimit: Math.max(plan.executeLimit, plan.candidates.length),
           fetchedGroups: plan.fetchedGroups, totalGroups: plan.totalGroups, candidates: plan.candidates,
           excludedGroups: plan.excludedGroups, ...(plan.preparation ? { preparation: plan.preparation } : {}),
         }, { createdAt: plan.createdAt, expiresAt: plan.expiresAt }) };
@@ -393,6 +549,7 @@ export function createExecutionService(deps: {
         const entry = plans.get(planId);
         if (!entry) throw new ExecutionServiceError(410, "plan_unavailable", "Review expired, was consumed, or is unavailable; prepare a new review");
         if (!sameScope(entry.plan.scope, scope)) throw new ExecutionServiceError(409, "plan_scope_changed", "The Immich connection changed; prepare a new review");
+        await assertRevision(scope, entry.plan.ruleset);
         const { selectedGroupIds, dryRun } = parsed.data;
         const candidates = entry.plan.candidates.filter((c) => selectedGroupIds.includes(c.groupId));
         if (candidates.length !== selectedGroupIds.length || candidates.length > entry.plan.executeLimit) throw new ExecutionServiceError(400, "invalid_selection", "Selection must contain eligible reviewed groups within the attempt limit");
@@ -438,7 +595,7 @@ export function createExecutionService(deps: {
       return exclusive(async (_, scope) => {
         const attempt = findAttempt(scope, attemptId);
         if (!isUnresolved(attempt)) throw new ExecutionServiceError(409, "attempt_closed", "This attempt is already resolved or released");
-        const assessment = await reconcileAttempt(client, attempt, deps.delay);
+        const assessment = await reconcileAttempt(client, attempt, deps.delay, await activeRules(scope));
         // Store every assessment, including a failed release request. Never discard prior evidence.
         const updated = journal.assess(scope, attemptId, assessment, release && assessment.classification === "pair-intact");
         if (release && assessment.classification !== "pair-intact") throw new ExecutionServiceError(409, "release_not_verified", "A fresh intact eligible pair could not be verified; no new attempt was allowed", { assessment });

@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 const limit = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-export const CreatePlanSchema = z.object({ scanLimit: limit.default(100), executeLimit: limit.default(10) }).strict();
+export const CreatePlanSchema = z.object({ scanLimit: limit.default(100), executeLimit: limit.default(10),
+  scan: z.object({ mode: z.enum(["groups", "candidates"]), candidateTarget: limit.optional() }).strict().optional(),
+}).strict().refine((value) => value.scan?.mode !== "candidates" || value.scan.candidateTarget !== undefined, "Candidate target is required");
 export const ReviewedRunSchema = z.object({
   selectedGroupIds: z.array(z.string().min(1)).nonempty().refine((ids) => new Set(ids).size === ids.length),
   dryRun: z.boolean().default(true),

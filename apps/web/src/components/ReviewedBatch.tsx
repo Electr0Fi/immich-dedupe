@@ -10,7 +10,7 @@ function AssetComparison({ asset, planId, keeper }: { asset: ReviewedAsset; plan
       : <img className="review-thumbnail" loading="lazy" src={getReviewedThumbnailUrl(planId, asset.id)} alt={`${keeper ? 'Keeper' : 'Loser'} preview: ${asset.fileName}`} onError={() => setFailed(true)} />}
     <p><strong>{asset.fileName}</strong></p>
     <dl className="asset-facts">
-      <div><dt>Source</dt><dd>{asset.isExternal ? 'External library' : 'Internal library'}</dd></div>
+      <div><dt>Path</dt><dd className="run-identifier">{asset.originalPath ?? 'Unknown'}</dd></div>
       <div><dt>File size</dt><dd>{asset.fileSize == null ? 'Unknown' : `${new Intl.NumberFormat().format(asset.fileSize)} bytes`}</dd></div>
       <div><dt>Dimensions</dt><dd>{asset.width} × {asset.height}</dd></div>
       <div><dt>Albums</dt><dd>{asset.albums.map((a) => a.albumName).join(', ') || 'None visible'}</dd></div>
@@ -52,6 +52,7 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
     {!review ? <p>Choose limits and prepare a review. A review lasts 15 minutes and is retained across screen navigation. Reloading the page or restarting the API requires a new review.</p> : <>
       <p>{selected.length} groups selected · {selectedCandidates.reduce((n, c) => n + c.proposedAlbumIds.length, 0)} proposed album additions · {review.excludedGroups.length} excluded groups</p>
       <p>Scanned {review.fetchedGroups} of {review.totalGroups} groups. Review expires at {new Date(review.expiresAt).toLocaleTimeString()}.</p>
+      {review.ruleset && <p className="run-identifier">Rules revision: {review.ruleset.revision}</p>}
       <p className="run-identifier">Plan: {review.planId}</p>
       {execution.expired && !execution.busy && <p className="error" role="alert">This review expired. Prepare a new review and dry-run the selection.</p>}
       {execution.invalid && !execution.expired && !execution.busy && <p className="error" role="alert">This review is no longer available for execution. Prepare a new review before retrying.</p>}
@@ -79,6 +80,7 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
           <AssetComparison asset={candidate.keepAsset} planId={review.planId} keeper />
           <AssetComparison asset={candidate.trashAsset} planId={review.planId} keeper={false} />
         </div>
+        {'evidenceClass' in candidate.decision && <p><strong>Comparison:</strong> {candidate.decision.evidenceClass === 'checksum' ? 'Checksum match' : 'Metadata match — this does not prove identical content'}</p>}
         <p><strong>Rule:</strong> {candidate.decision.matchedRuleName}</p>
         <ul>{candidate.decision.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
         <p><strong>Proposed additions to keeper:</strong> {candidate.trashAsset.albums.filter((a) => candidate.proposedAlbumIds.includes(a.albumId)).map((a) => a.albumName).join(', ') || 'None'}</p>

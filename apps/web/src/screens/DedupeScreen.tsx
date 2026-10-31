@@ -1,3 +1,5 @@
+import { ScanProgressSummary } from '../components/ScanProgressSummary';
+import { PendingCandidates } from '../components/PendingCandidates';
 import { QuickReviewBatch } from '../components/QuickReviewBatch';
 import { ReviewPreparationActivity } from '../components/ReviewPreparationActivity';
 import { ReviewedBatch } from '../components/ReviewedBatch';
@@ -113,7 +115,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
     analysis?.results.filter((d) => d.status === 'uncertain' || d.status === 'skip') ?? [];
 
   const preparedSnapshot = execution.quickSnapshot ?? execution.review;
-  const buttonsDisabled = execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails || execution.reading || previewLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1;
+  const buttonsDisabled = execution.scanLoading || execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails || execution.reading || previewLoading || !Number.isSafeInteger(scanLimit) || scanLimit < 1 || !Number.isSafeInteger(executeLimit) || executeLimit < 1 || (execution.scanOptions.mode === 'candidates' && (!Number.isSafeInteger(execution.scanOptions.candidateTarget) || (execution.scanOptions.candidateTarget ?? 0) < 1));
   const activityMessage = execution.loadingDetails ? 'Loading full details and album actions for selected Quick Review groups…' : execution.selectingAll ? 'Selecting all eligible reviewed groups… Updating Execute Limit.' : execution.busy
     ? execution.request?.dryRun
       ? 'Dry run in progress… No Immich assets will be changed.'
@@ -135,8 +137,16 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         <h2>Controls</h2>
 
         <div className="controls">
+          <label>Scan mode<select aria-label="Scan mode" disabled={execution.busy || execution.preparing || execution.loadingDetails || execution.selectingAll} value={execution.scanOptions.mode}
+            onChange={(event) => execution.changeScanOptions(event.target.value === 'candidates' ? { mode: 'candidates', candidateTarget: 100 } : { mode: 'groups' })}>
+            <option value="groups">Inspect additional groups</option><option value="candidates">Find candidate target</option>
+          </select></label>
+          {execution.scanOptions.mode === 'candidates' && <label>{quickMode ? 'Provisional candidate target' : 'Fully checked candidate target'}<input type="number" min={1} value={execution.scanOptions.candidateTarget ?? 100}
+            disabled={execution.busy || execution.preparing || execution.loadingDetails || execution.selectingAll}
+            onChange={(event) => execution.changeScanOptions({ mode: 'candidates', candidateTarget: Number(event.target.value) })} /></label>}
+
           <label>
-            Scan Limit
+            {execution.scanOptions.mode === 'candidates' ? 'Maximum groups to inspect' : 'Scan Limit'}
             <input
               type="number"
               min={1}
@@ -163,6 +173,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
           <button disabled={execution.preparing ? execution.cancelling : buttonsDisabled} onClick={execution.preparing ? execution.cancelPreparation : handlePrepare}>
             {execution.preparing ? execution.cancelling ? 'Cancelling…' : 'Cancel review' : 'Prepare review'}
           </button>
+          <button disabled={buttonsDisabled} onClick={handlePrepare}>Continue scanning</button>
           <button disabled={buttonsDisabled || !execution.validReview || execution.selected.length === 0} onClick={() => handleRun(true)}>
             {execution.busy && execution.request?.dryRun ? 'Running dry run…' : 'Dry-run selected'}
           </button>
@@ -171,6 +182,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
           </button>
         </div>
 
+        <p className="field-hint">Each scan advances through additional groups. Previously checked exclusions do not fill the next scan. Candidate-target scans stop at the target, inspection budget or end of the available list; the target may not be reached.</p>
         <label className="toggle-row">
           <input type="checkbox" aria-label="Quick Review" checked={quickMode} disabled={execution.busy || execution.preparing || execution.selectingAll || execution.loadingDetails}
             onChange={(event) => handleQuickModeChange(event.target.checked)} />
@@ -220,7 +232,11 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         )}
       </section>
 
+      {preparedSnapshot?.scan && <ScanProgressSummary scan={preparedSnapshot.scan} quick={Boolean(execution.quickSnapshot)} />}
+
       {execution.quickSnapshot ? <QuickReviewBatch execution={execution} /> : <ReviewedBatch execution={execution} />}
+
+      <PendingCandidates execution={execution} />
 
       <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
 

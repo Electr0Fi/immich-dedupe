@@ -31,6 +31,7 @@ type RawAsset = {
     fileSizeInByte?: number | string | null;
     exifImageWidth?: number | null;
     exifImageHeight?: number | null;
+    [field: string]: unknown;
   } | null;
 };
 
@@ -73,6 +74,11 @@ function normalizeAsset(raw: RawAsset, groupId: string): AssetRecord {
     isInternal,
     fileSize: null,
     albums: [],
+    albumsKnown: false,
+    ruleMetadata: { ...Object.fromEntries(["make", "model", "lensModel", "orientation", "fNumber", "iso", "exposureTime", "rating"].map((field) => {
+      const value = raw.exifInfo?.[field];
+      return [field, typeof value === "string" || typeof value === "number" ? value : null];
+    })), ...(raw.livePhotoVideoId === undefined ? { missingLivePhotoLink: 1 } : {}) },
   };
 }
 

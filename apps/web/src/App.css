@@ -684,3 +684,12 @@ button:focus-visible, summary:focus-visible { outline: 3px solid #1a56db; outlin
 .thumbnail-placeholder { display: flex; justify-content: center; align-items: center; padding: 16px; color: #5a6475; }
 .asset-facts dd { font-size: 14px; font-weight: 400; margin-bottom: 12px; }
 @media (max-width: 600px) { .review-pair { grid-template-columns: minmax(0, 1fr); } }
+
+.rule-editor { border-top: 1px solid #dde2ea; margin-top: 24px; padding-top: 12px; }
+.rule-condition, .keeper-preferences { border: 1px solid #dde2ea; border-radius: 8px; padding: 12px; margin: 12px 0; min-width: 0; }
+.rule-condition-child { border-left: 2px solid #d6dfeb; padding-left: 12px; margin: 12px 0; }
+.keeper-preferences textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; padding: 10px; font: inherit; }
+.rule-editor select, .controls select { max-width: 100%; padding: 10px; border: 1px solid #ccd3dd; border-radius: 6px; background: white; font: inherit; }
+.rule-editor .controls { align-items: end; }
+.pending-candidate { border-top: 1px solid #dde2ea; padding: 14px 0; }
+.pending-candidate details { margin-top: 10px; overflow-wrap: anywhere; }

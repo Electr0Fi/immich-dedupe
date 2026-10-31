@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { evaluateDuplicateGroup } from "@immich-dedupe/rule-engine";
-import type { AssetRecord, DuplicateGroup, ReviewedAsset, ReviewedCandidate, ReviewedPlan } from "@immich-dedupe/shared";
+import { evaluateDuplicateGroup, evaluateConfiguredGroup, validateRuleSet } from "@immich-dedupe/rule-engine";
+import type { AssetRecord, DuplicateGroup, ReviewedAsset, ReviewedCandidate, ReviewedPlan, RuleSet } from "@immich-dedupe/shared";
 import type { FreshPreflight } from "./freshPreflight";
 
 const id = z.string().min(1);
@@ -24,7 +25,43 @@ export const reviewedCandidateSchema = z.object({
     if (JSON.stringify(candidate) !== JSON.stringify(expected)) throw new Error("Invalid candidate");
   } catch { context.addIssue({ code: "custom", message: "Inconsistent reviewed selection, rule or album actions" }); }
 });
-export function candidateToGroup(candidate: Pick<ReviewedCandidate, "groupId" | "keepAsset" | "trashAsset">): DuplicateGroup {
+// The historical schema above deliberately retains its original rule semantics.
+// Configured evidence includes the complete rule inputs, rather than reconstructing
+// dates, MIME or EXIF fields from the compact display assets.
+const ruleAssetSchema = reviewedAssetSchema.extend({
+  originalMimeType: z.string().nullable(), fileCreatedAt: z.string().nullable(),
+  fileModifiedAt: z.string().nullable(), takenAt: z.string().nullable(),
+  deviceId: z.string().nullable(), deviceAssetId: z.string().nullable(), libraryId: z.string().nullable(),
+  albumsKnown: z.boolean().optional(),
+  ruleMetadata: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+}).strict();
+const configuredRuleSetSchema = z.unknown().transform((value, context): RuleSet => {
+  try { return validateRuleSet(value); }
+  catch { context.addIssue({ code: "custom", message: "Invalid pinned ruleset" }); return z.NEVER; }
+});
+const configuredDecisionSchema = z.object({
+  groupId: id, status: z.literal("auto-resolve"), keepAssetId: id, trashAssetIds: z.array(id).length(1),
+  confidence: z.literal(100), matchedRuleId: id, matchedRuleName: id, reasons: z.array(z.string()),
+  rulesetRevision: id, engineVersion: z.literal("1"), evidenceClass: z.enum(["checksum", "metadata"]),
+  outcome: z.literal("eligible"), requiredFields: z.array(z.string()), missingFields: z.array(z.string()),
+  dependencyFingerprint: z.string(), observedValues: z.record(z.string(), z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))),
+}).strict();
+export const configurableCandidateSchema = z.object({
+  groupId: id, keepAsset: reviewedAssetSchema, trashAsset: reviewedAssetSchema,
+  decision: configuredDecisionSchema, requiredAlbumIds: ids, proposedAlbumIds: ids, skippedAlbumIds: ids,
+  ruleset: configuredRuleSetSchema, ruleAssets: z.array(ruleAssetSchema).length(2),
+}).strict().superRefine((candidate, context) => {
+  try {
+    const group = candidateToGroup(candidate);
+    const decision = evaluateConfiguredGroup(group, candidate.ruleset);
+    const expected = candidateFromGroup(group, decision, candidate.ruleset);
+    if (!isDeepStrictEqual(candidate, expected)) throw new Error("Invalid configured candidate");
+  } catch { context.addIssue({ code: "custom", message: "Inconsistent configured rule evidence, selection or album actions" }); }
+});
+export const currentCandidateSchema = z.union([configurableCandidateSchema, reviewedCandidateSchema]);
+
+export function candidateToGroup(candidate: Pick<ReviewedCandidate, "groupId" | "keepAsset" | "trashAsset"> & { ruleAssets?: AssetRecord[] }): DuplicateGroup {
+  if (candidate.ruleAssets) return { groupId: candidate.groupId, assets: structuredClone(candidate.ruleAssets) };
   return { groupId: candidate.groupId, assets: [candidate.keepAsset, candidate.trashAsset].map((asset) => ({
     ...asset, originalMimeType: null, fileCreatedAt: null, fileModifiedAt: null, takenAt: null,
     deviceId: null, deviceAssetId: null, libraryId: null,
@@ -37,7 +74,7 @@ export function projectAsset(asset: AssetRecord): ReviewedAsset {
     livePhotoVideoId: asset.livePhotoVideoId, isExternal: asset.isExternal, isInternal: asset.isInternal,
     albums: [...asset.albums].sort((a, b) => a.albumId.localeCompare(b.albumId)) };
 }
-export function candidateFromGroup(group: DuplicateGroup, decision: FreshPreflight["decision"]): ReviewedCandidate {
+export function candidateFromGroup(group: DuplicateGroup, decision: FreshPreflight["decision"], ruleset?: RuleSet): ReviewedCandidate {
   const keep = group.assets.find((a) => a.id === decision.keepAssetId)!;
   const trash = group.assets.find((a) => a.id === decision.trashAssetIds[0])!;
   // Invalid rules must be rejected by the caller rather than guessed into a candidate.
@@ -45,9 +82,10 @@ export function candidateFromGroup(group: DuplicateGroup, decision: FreshPreflig
   const keepIds = new Set(keep.albums.map((a) => a.albumId));
   const trashIds = trash.albums.map((a) => a.albumId).sort((a, b) => a.localeCompare(b));
   return { groupId: group.groupId, keepAsset: projectAsset(keep), trashAsset: projectAsset(trash), decision,
-    requiredAlbumIds: trashIds, proposedAlbumIds: trashIds.filter((a) => !keepIds.has(a)), skippedAlbumIds: trashIds.filter((a) => keepIds.has(a)) };
+    requiredAlbumIds: trashIds, proposedAlbumIds: trashIds.filter((a) => !keepIds.has(a)), skippedAlbumIds: trashIds.filter((a) => keepIds.has(a)),
+    ...(ruleset ? { ruleset: structuredClone(ruleset), ruleAssets: [keep, trash].map((asset) => ({ ...structuredClone(asset), albums: [...asset.albums].sort((a, b) => a.albumId.localeCompare(b.albumId)) })) } : {}) };
 }
-export function reviewedCandidate(fresh: FreshPreflight): ReviewedCandidate { return candidateFromGroup(fresh.group, fresh.decision); }
+export function reviewedCandidate(fresh: FreshPreflight, ruleset?: RuleSet): ReviewedCandidate { return candidateFromGroup(fresh.group, fresh.decision, ruleset); }
 export function changedCandidate(expected: ReviewedCandidate, actual: ReviewedCandidate) {
   const reasons: string[] = [];
   if (expected.keepAsset.id !== actual.keepAsset.id || expected.trashAsset.id !== actual.trashAsset.id || expected.groupId !== actual.groupId) reasons.push("Group membership or keeper/loser selection changed");
@@ -58,6 +96,9 @@ export function changedCandidate(expected: ReviewedCandidate, actual: ReviewedCa
     if (JSON.stringify(beforeAlbums) !== JSON.stringify(afterAlbums)) reasons.push(`${side === "keepAsset" ? "Keeper" : "Loser"} album memberships or names changed`);
   }
   if (JSON.stringify(expected.decision) !== JSON.stringify(actual.decision)) reasons.push("Rule decision changed");
+  if (!isDeepStrictEqual(expected.requiredAlbumIds, actual.requiredAlbumIds) || !isDeepStrictEqual(expected.proposedAlbumIds, actual.proposedAlbumIds) || !isDeepStrictEqual(expected.skippedAlbumIds, actual.skippedAlbumIds)) reasons.push("Planned album actions changed");
+  if (!isDeepStrictEqual(expected.ruleset, actual.ruleset)) reasons.push("Pinned ruleset changed");
+  if (!isDeepStrictEqual(expected.ruleAssets, actual.ruleAssets)) reasons.push("Rule metadata changed");
   return reasons;
 }
 

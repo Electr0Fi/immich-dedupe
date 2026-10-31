@@ -1,6 +1,7 @@
 import type { ReviewPreparationProgress, QuickReview } from '@immich-dedupe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, getLatestRun, getRun, prepareReviewedPlan, prepareQuickReview, prepareQuickSelection, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
+import { clearDedupeCache } from './dedupeCache';
+import { getPendingCandidates, preparePendingCandidates, recheckExcludedGroups, resetScanProgress, type PendingCandidate, type ScanSummary, type ScanRequest, ApiError, getLatestRun, getRun, prepareReviewedPlan, prepareQuickReview, prepareQuickSelection, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
 
 type Request = { phase: 'pending' | 'unknown' | 'failed'; dryRun: boolean; message: string; runId?: string; partial?: boolean } | null;
 function responseView(result: ExecutionRunResponse, startedAt: string): RunView {
@@ -25,6 +26,11 @@ export function useExecution(open: boolean) {
   const [quickReviewEnabled, setQuickReviewEnabled] = useState(false);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
+  const [scanOptions, setScanOptions] = useState<ScanRequest>({ mode: 'groups' });
+  const [pendingCandidates, setPendingCandidates] = useState<PendingCandidate[]>([]);
+  const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
   const [limits, setLimits] = useState({ scanLimit: 100, executeLimit: 5 });
   const [preparing, setPreparing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -88,12 +94,71 @@ export function useExecution(open: boolean) {
   }, [open, applyLatest, readFailure]);
 
   useEffect(() => {
+    if (!open || pending.current) return;
+    let active = true;
+    getPendingCandidates().then((value) => { if (active && mounted.current) { setPendingCandidates(value.pending); setScanSummary(value.summary); setScanError(null); } })
+      .catch((error: unknown) => { if (active && mounted.current) setScanError(error instanceof Error ? error.message : 'Scan progress could not be loaded'); });
+    return () => { active = false; };
+  }, [open]);
+
+  useEffect(() => {
     const snapshot = review ?? quickSnapshot;
     if (!snapshot) return;
     const timer = window.setTimeout(() => { setExpired(true); setAuthorization(null); }, Math.max(0, Date.parse(snapshot.expiresAt) - Date.now()));
     return () => window.clearTimeout(timer);
   }, [review, quickSnapshot]);
 
+  function invalidateReview() {
+    if (pending.current) return;
+    setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]);
+    setInvalid(false); setExpired(false); setReviewError(null); setSelectionMessage(null); setPreparationMessage(null);
+    clearDedupeCache();
+  }
+  function rulesPublished() { invalidateReview(); void refreshPending(); }
+  function changeScanOptions(next: ScanRequest) {
+    if (pending.current) return;
+    setScanOptions(next); invalidateReview();
+  }
+  async function refreshPending() {
+    if (pending.current) return;
+    const current = version.current;
+    setScanLoading(true); setScanError(null);
+    try {
+      const data = await getPendingCandidates();
+      if (mounted.current && current === version.current) { setPendingCandidates(data.pending); setScanSummary(data.summary); }
+    } catch (error) {
+      if (mounted.current && current === version.current) setScanError(error instanceof Error ? error.message : 'Scan progress could not be loaded');
+    } finally { if (mounted.current) setScanLoading(false); }
+  }
+  async function updateScan(action: 'recheck' | 'reset') {
+    if (pending.current || scanLoading) return;
+    setScanLoading(true); setScanError(null);
+    try {
+      await (action === 'reset' ? resetScanProgress() : recheckExcludedGroups());
+      invalidateReview();
+      const data = await getPendingCandidates(); setPendingCandidates(data.pending); setScanSummary(data.summary);
+    } catch (error) { setScanError(error instanceof Error ? error.message : 'Scan progress could not be updated'); }
+    finally { setScanLoading(false); }
+  }
+  async function loadPendingCandidates(ids: string[]) {
+    if (pending.current || ids.length === 0 || ids.length > limits.executeLimit) return;
+    pending.current = true;
+    const current = ++version.current;
+    setLoadingDetails(true); setReading(false); setReviewError(null); setAuthorization(null);
+    try {
+      const { plan } = await preparePendingCandidates(ids, limits.executeLimit);
+      if (!mounted.current || current !== version.current) return;
+      setReview(plan); setQuickSnapshot(null); setSelected(plan.candidates.map((candidate) => candidate.groupId));
+      setLimits({ scanLimit: plan.scanLimit, executeLimit: plan.executeLimit }); setInvalid(false); setExpired(Date.parse(plan.expiresAt) <= Date.now());
+      setSelectionMessage('Fresh details loaded for pending candidates. Inspect this review and complete a new dry-run before execution.');
+    } catch (error) {
+      if (mounted.current && current === version.current) setReviewError(error instanceof Error ? error.message : 'Pending candidates could not be prepared');
+    } finally {
+      pending.current = false;
+      if (mounted.current && current === version.current) setLoadingDetails(false);
+    }
+    await refreshPending();
+  }
   function changeQuickReview(enabled: boolean) {
     if (pending.current) return;
     setQuickReviewEnabled(enabled); setQuickSnapshot(null); setReview(null); setAuthorization(null); setSelected([]);
@@ -195,7 +260,7 @@ export function useExecution(open: boolean) {
         session.id = progress.preparationId;
         setPreparationProgress(progress); setProgressUpdatedAt(Date.now());
         if (session.requested) void sendCancellation(session);
-      });
+      }, scanOptions);
       if (!mounted.current || version.current !== current) return;
       setReviewError(null);
       const snapshot = value.quickReview ?? value.plan;
@@ -215,7 +280,7 @@ export function useExecution(open: boolean) {
       return value.status;
     } catch (error) {
       if (mounted.current && version.current === current) setReviewError(error instanceof Error ? error.message : 'Review could not be prepared');
-    } finally { pending.current = false; if (mounted.current && version.current === current) { setPreparing(false); setCancelling(false); preparation.current = null; } }
+    } finally { pending.current = false; if (mounted.current && version.current === current) { setPreparing(false); setCancelling(false); preparation.current = null; } void refreshPending(); }
   }
   const validReview = Boolean(review && !invalid && !expired);
   const selectionKey = JSON.stringify(selected);
@@ -254,9 +319,9 @@ export function useExecution(open: boolean) {
       const unknown = !(error instanceof ApiError) || (error.status >= 500 && !['identity_unavailable', 'journal_unavailable'].includes(error.code ?? ''));
       setRequest({ phase: unknown ? 'unknown' : 'failed', dryRun: params.dryRun, message,
         runId: error instanceof ApiError ? error.runId : undefined, partial: error instanceof ApiError && Boolean(error.partialExecution) });
-    } finally { pending.current = false; }
+    } finally { pending.current = false; void refreshPending(); }
   }
-  return { review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
+  return { scanOptions, changeScanOptions, pendingCandidates, scanSummary, scanError, scanLoading, refreshPending, updateScan, loadPendingCandidates, invalidateReview, rulesPublished, review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
     prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
     run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }

@@ -1,111 +1,29 @@
-import type {
-  AlbumMembership,
-  AssetRecord,
-  DuplicateGroup,
-  NormalizedDuplicatesResponse,
-} from "@immich-dedupe/shared";
+import { z } from "zod";
+import type { NormalizedDuplicatesResponse } from "@immich-dedupe/shared";
 import type { ImmichClient } from "./immichClient";
 
-type RawAlbumListItem = {
-  id?: string;
-  albumName?: string;
-};
+const albumList = z.array(z.object({ id: z.string().min(1), albumName: z.string() }));
 
-type RawAlbumAsset = {
-  id?: string;
-};
-
-type RawAlbumDetail = {
-  id?: string;
-  albumName?: string;
-  assets?: RawAlbumAsset[];
-};
-
-type AssetAlbumIndex = Map<string, AlbumMembership[]>;
-
+/** Read complete per-asset album memberships, including shared albums. */
 export function createAlbumEnricher(client: Pick<ImmichClient, "getAllAlbums" | "getAlbumInfo">) {
-  const { getAllAlbums, getAlbumInfo } = client;
-  function pushMembership(
-    index: AssetAlbumIndex,
-    assetId: string,
-    membership: AlbumMembership
-  ) {
-    const existing = index.get(assetId) ?? [];
-    existing.push(membership);
-    index.set(assetId, existing);
-  }
-
-  async function buildAssetAlbumIndex(): Promise<AssetAlbumIndex> {
-    const index: AssetAlbumIndex = new Map();
-
-    const albums = (await getAllAlbums({})) as RawAlbumListItem[];
-
-    for (const album of albums) {
-      if (typeof album.id !== "string") continue;
-
-      const detail = (await getAlbumInfo({
-        id: album.id,
-        withoutAssets: false,
-      })) as RawAlbumDetail;
-
-      const albumId = typeof detail.id === "string" ? detail.id : album.id;
-      const albumName =
-        typeof detail.albumName === "string"
-          ? detail.albumName
-          : typeof album.albumName === "string"
-            ? album.albumName
-            : "Unknown Album";
-
-      if (!Array.isArray(detail.assets)) continue;
-
-      for (const asset of detail.assets) {
-        if (typeof asset.id !== "string") continue;
-
-        pushMembership(index, asset.id, {
-          albumId,
-          albumName,
-        });
+  return async function enrichDuplicatesWithAlbums(normalized: NormalizedDuplicatesResponse): Promise<NormalizedDuplicatesResponse> {
+    const result = structuredClone(normalized);
+    for (const group of result.groups) for (const asset of group.assets) {
+      // Settle every started read before returning, including on the coordinator path.
+      const settled = await Promise.allSettled([
+        client.getAllAlbums({ assetId: asset.id }), client.getAllAlbums({ assetId: asset.id, shared: true }),
+      ]);
+      const memberships = new Map<string, string>();
+      for (const response of settled) {
+        if (response.status === "rejected") throw new Error("Album memberships could not be read");
+        for (const album of albumList.parse(response.value)) {
+          if (memberships.has(album.id) && memberships.get(album.id) !== album.albumName) throw new Error("Conflicting album information");
+          memberships.set(album.id, album.albumName);
+        }
       }
+      asset.albums = [...memberships].sort(([a], [b]) => a.localeCompare(b)).map(([albumId, albumName]) => ({ albumId, albumName }));
+      asset.albumsKnown = true;
     }
-
-    return index;
-  }
-
-  function enrichAssetWithAlbums(
-    asset: AssetRecord,
-    index: AssetAlbumIndex
-  ): AssetRecord {
-    return {
-      ...asset,
-      albums: index.get(asset.id) ?? [],
-    };
-  }
-
-  function enrichGroupWithAlbums(
-    group: DuplicateGroup,
-    index: AssetAlbumIndex
-  ): DuplicateGroup {
-    return {
-      ...group,
-      assets: group.assets.map((asset) => enrichAssetWithAlbums(asset, index)),
-    };
-  }
-
-  return async function enrichDuplicatesWithAlbums(
-    normalized: NormalizedDuplicatesResponse
-  ): Promise<NormalizedDuplicatesResponse> {
-    const index = await buildAssetAlbumIndex();
-
-    const groups = normalized.groups.map((group) =>
-      enrichGroupWithAlbums(group, index)
-    );
-
-    const totalAssets = groups.reduce((sum, group) => sum + group.assets.length, 0);
-
-    return {
-      groups,
-      totalGroups: groups.length,
-      totalAssets,
-    };
+    return result;
   };
 }

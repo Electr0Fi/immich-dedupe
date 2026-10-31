@@ -1,15 +1,17 @@
 import { z } from "zod";
-import type { RecoveryAttempt, RecoveryAssessment } from "@immich-dedupe/shared";
+import type { RecoveryAttempt, RecoveryAssessment, RuleSet } from "@immich-dedupe/shared";
 import { evaluateDuplicateGroup } from "@immich-dedupe/rule-engine";
 import { assetSchema, albumDetailSchema, groupListSchema } from "./executeDecision";
 import { normalizeDuplicates } from "./normalizeDuplicates";
 import type { ImmichClient } from "./immichClient";
+import { readFreshPreflight } from "./freshPreflight";
 
 const currentStateSchema = z.object({ id: z.string().min(1), isTrashed: z.boolean(), duplicateId: z.string().nullable().optional() });
 
 /** Observe only; never repair, restore, transfer, or resolve anything in Immich. */
 export async function reconcileAttempt(client: ImmichClient, attempt: RecoveryAttempt,
-  delay: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  delay: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  ruleset?: RuleSet,
 ): Promise<RecoveryAssessment> {
   let message = "Current state could not be verified";
   for (let round = 0; round < 3; round++) {
@@ -41,15 +43,22 @@ export async function reconcileAttempt(client: ImmichClient, attempt: RecoveryAt
       if (keeper.isTrashed || loser.isTrashed || keeper.duplicateId !== attempt.groupId || loser.duplicateId !== attempt.groupId || matching.length !== 1 ||
           matching[0].assets.length !== 2 || new Set(matching[0].assets.map((a) => a.id)).size !== 2 ||
           !matching[0].assets.some((a) => a.id === keeper.id) || !matching[0].assets.some((a) => a.id === loser.id)) throw new Error("Original pair is no longer intact");
-      // Eligibility for a new attempt still requires all fresh safety metadata.
-      const freshKeeper = assetSchema.parse(rawKeeper), freshLoser = assetSchema.parse(rawLoser);
-      const group = normalizeDuplicates([{ duplicateId: attempt.groupId, assets: [freshKeeper, freshLoser] }]).groups[0];
-      [freshKeeper, freshLoser].forEach((asset, index) => {
-        const size = asset.exifInfo?.fileSizeInByte;
-        group.assets[index].fileSize = size == null || (typeof size === "string" && !size.trim()) ? null : Number(size);
-      });
-      const decision = evaluateDuplicateGroup(group);
-      if (decision.status !== "auto-resolve" || decision.keepAssetId !== keeper.id || decision.trashAssetIds[0] !== loser.id) throw new Error("Fresh eligibility no longer supports the original selection");
+      // A release permits a future attempt under the current rules; it never
+      // rewrites the original attempt or replays its mutations.
+      if (ruleset) {
+        await readFreshPreflight(client, attempt.groupId, { keepId: keeper.id, trashId: loser.id },
+          { checkCancelled() {}, stage() {} }, { ruleset, memberships: groups });
+      } else {
+        // Preserve the historical policy when no configurable rules are supplied.
+        const freshKeeper = assetSchema.parse(rawKeeper), freshLoser = assetSchema.parse(rawLoser);
+        const group = normalizeDuplicates([{ duplicateId: attempt.groupId, assets: [freshKeeper, freshLoser] }]).groups[0];
+        [freshKeeper, freshLoser].forEach((asset, index) => {
+          const size = asset.exifInfo?.fileSizeInByte;
+          group.assets[index].fileSize = size == null || (typeof size === "string" && !size.trim()) ? null : Number(size);
+        });
+        const decision = evaluateDuplicateGroup(group);
+        if (decision.status !== "auto-resolve" || decision.keepAssetId !== keeper.id || decision.trashAssetIds[0] !== loser.id) throw new Error("Fresh eligibility no longer supports the original selection");
+      }
       if (!albums.every((album) => album.assets.some((a) => a.id === keeper.id || a.id === loser.id))) throw new Error("Original album memberships are no longer accounted for");
       return { checkedAt: new Date().toISOString(), classification: "pair-intact",
         message: "The original pair is currently intact and eligible; explicit release is required before a new attempt",

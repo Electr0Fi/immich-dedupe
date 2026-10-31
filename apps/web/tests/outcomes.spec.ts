@@ -58,6 +58,7 @@ async function fakeApi(page: Page, initial: RunView | null = runView()) {
       case `/execution/plans/${runId}/assets/keeper/thumbnail`:
       case `/execution/plans/${runId}/assets/loser/thumbnail`: return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT8sAAAAASUVORK5CYII=', 'base64') });
       case '/settings/status': json = { ok: true, status: 'connected', immichUrl: scope.apiUrl }; break;
+      case '/execution/scan/pending': json = { ok: true, pending: [], summary: { rulesetRevision: 'rules-1', totalGroups: 4, visitedGroups: 0, remainingGroups: 4, excludedGroups: 0, deferredGroups: 0, blockedGroups: 0, pendingCandidates: 0, updatedAt: new Date().toISOString() } }; break;
       case '/execution/runs/latest': json = response(state.latest); break;
       case `/execution/runs/${runId}`: json = response(state.latest); break;
       case '/execution/status':
@@ -369,7 +370,7 @@ test('review compares image metadata and named album changes, requires exact dry
   await review.getByRole('button', { name: 'Details for group photos', exact: true }).click();
   await expect(review.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
   await expect(review.getByRole('heading', { name: 'Move to trash', exact: true })).toBeVisible();
-  await expect(review.getByText('External library', { exact: true })).toBeVisible();
+  await expect(review.locator('.asset-facts').getByText('/external/photo.jpg', { exact: true })).toBeVisible();
   await expect(review.getByText('200 bytes', { exact: true })).toBeVisible();
   await review.screenshot({ path: 'test-results/review-desktop.png' });
   await expect(review.getByText('Proposed additions to keeper: Family', { exact: true })).toBeVisible();
@@ -864,7 +865,8 @@ test('late detailed preview errors do not block or replace quick results', async
   await page.route('**/execution/plan?*', (route) => { held.push(route); });
   await page.route('**/analysis/duplicates?*', (route) => { held.push(route); });
   await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
-  await expect.poll(() => held.length).toBe(3);
+  // React StrictMode can mount this read-only effect twice in development.
+  await expect.poll(() => new Set(held.map((route) => new URL(route.request().url()).pathname)).size).toBe(3);
   await page.getByRole('checkbox', { name: 'Quick Review', exact: true }).check();
   await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Prepare review', exact: true }).click();
@@ -897,4 +899,81 @@ test('switching quick mode on and off during a cached preview refresh never leav
   await held!.fulfill({ status: 500, json: { error: 'Old preview failure' } });
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
+});
+
+function configurableRulesFixture() {
+  const rule = { id: 'exact', name: 'Identical files', enabled: true, action: 'include' as const, comparison: 'checksum' as const, acknowledgeHeuristic: false,
+    conditions: { all: [{ field: 'fileName' as const, operator: 'same' as const }] },
+    keeperPreferences: [{ field: 'directory' as const, direction: 'lowest' as const, directories: ['/photos/originals', '/photos/copies'] }] };
+  return { ok: true, active: { schemaVersion: 1 as const, rules: [rule], revision: 'rules-1', engineVersion: '1' as const }, draft: { schemaVersion: 1 as const, rules: [rule] }, presets: [rule] };
+}
+
+test('Rules provides a draft builder and publishing clears a previous review and dry-run approval', async ({ page }) => {
+  await fakeApi(page); await openDedupe(page);
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeEnabled();
+  const state = configurableRulesFixture();
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  let published = false;
+  await page.route('**/rules/publish', (route) => {
+    const input = route.request().postDataJSON();
+    expect(input.ruleset.rules[0].comparison).toBe('metadata');
+    expect(input.ruleset.rules[0].acknowledgeHeuristic).toBe(true);
+    expect(input.ruleset.rules[0].keeperPreferences[0].directories).toEqual(['/directory-a', '/directory-b']);
+    published = true;
+    return route.fulfill({ json: { ...state, draft: input.ruleset, active: { ...input.ruleset, revision: 'rules-2', engineVersion: '1' } } });
+  });
+  await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Rules', exact: true })).toBeVisible();
+  await page.getByLabel('Comparison evidence', { exact: true }).selectOption('metadata');
+  await page.getByRole('checkbox', { name: /I accept that metadata matching/ }).check();
+  await page.getByLabel('Directories, preferred first (one per line)').fill('/directory-a\n/directory-b');
+  await page.getByRole('button', { name: 'Publish rules', exact: true }).click();
+  await expect(page.getByText(/Rules published/)).toBeVisible(); expect(published).toBe(true);
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: 'Include group photos' })).toHaveCount(0);
+});
+
+test('Rules snapshot tests show evidence and missing values without authorizing execution', async ({ page }) => {
+  await fakeApi(page); await openDedupe(page);
+  await page.route('**/rules', (route) => route.fulfill({ json: configurableRulesFixture() }));
+  await page.route('**/rules/test', (route) => {
+    expect(route.request().postDataJSON().snapshotId).toBe(runId);
+    return route.fulfill({ json: { ok: true, results: [{ groupId: 'photos', outcome: 'deferred', evidenceClass: 'unverified', matchedRuleName: 'Identical files', reasons: ['Checksum is missing'], missingFields: ['checksum'], observedValues: { checksum: [null, 'hash'] } }] } });
+  });
+  await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByRole('button', { name: 'Test draft against prepared review', exact: true }).click();
+  await page.getByText('Group photos: deferred · Unverified').click();
+  await expect(page.getByText('Missing: checksum', { exact: true })).toBeVisible();
+  await expect(page.getByText(/does not authorize execution/)).toBeVisible();
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+});
+
+test('Candidate-target scans pass a separate budget and preserve pending proposals for fresh review', async ({ page }) => {
+  await fakeApi(page, null);
+  const proposal = { groupId: 'photos', keepAssetId: 'keeper', trashAssetId: 'loser', keepFileName: 'photo.jpg', trashFileName: 'photo.jpg', keepPath: '/directory-a/photo.jpg', trashPath: '/directory-b/photo.jpg', comparisonClass: 'checksum', reason: 'Matching stored checksums', rulesetRevision: 'rules-1', observedAt: new Date().toISOString() };
+  await page.route('**/execution/scan/pending', (route) => route.fulfill({ json: { ok: true, pending: [proposal], summary: { rulesetRevision: 'rules-1', totalGroups: 300, visitedGroups: 100, remainingGroups: 200, excludedGroups: 99, deferredGroups: 0, blockedGroups: 0, pendingCandidates: 1, updatedAt: new Date().toISOString() } } }));
+  let scans = 0;
+  await page.route('**/execution/plans', (route) => {
+    const input = route.request().postDataJSON(); expect(input.scan).toEqual({ mode: 'candidates', candidateTarget: 20 }); expect(input.scanLimit).toBe(300); expect(input.executeLimit).toBe(5); scans++;
+    return route.fulfill({ json: { ok: true, plan: reviewPlan(input.scanLimit, input.executeLimit) } });
+  });
+  await page.route('**/execution/scan/prepare-pending', (route) => {
+    expect(route.request().postDataJSON()).toEqual({ selectedGroupIds: ['photos'], executeLimit: 5 });
+    return route.fulfill({ json: { ok: true, plan: reviewPlan() } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: 'Review pending group photos' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await page.getByLabel('Scan mode', { exact: true }).selectOption('candidates');
+  await page.getByLabel('Fully checked candidate target', { exact: true }).fill('20');
+  await page.getByLabel('Maximum groups to inspect', { exact: true }).fill('300');
+  await page.getByRole('button', { name: 'Continue scanning', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeEnabled(); expect(scans).toBe(1);
+  await page.getByRole('checkbox', { name: 'Review pending group photos' }).check();
+  await page.getByRole('button', { name: 'Prepare selected pending candidates', exact: true }).click();
+  await expect(page.getByText(/Fresh details loaded for pending candidates/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
 });
