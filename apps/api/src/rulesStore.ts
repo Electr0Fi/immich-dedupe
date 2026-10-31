@@ -1,6 +1,7 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { ExecutionScope, RuleSet, RuleSetDraft, RulesState } from "@immich-dedupe/shared";
+import type { ExecutionScope, RuleSet, RuleSetDraft, RulesState, RulePreset, SaveRulePresetRequest } from "@immich-dedupe/shared";
 import { assertRuleSetDraft, createDefaultRuleSetDraft, createRuleSet, defaultRulePresets, validateRuleSet } from "@immich-dedupe/rule-engine";
 import { writeAtomicJson, type JournalFs } from "./atomicJson";
 
@@ -13,7 +14,25 @@ export const ruleSetSchema = z.unknown().transform((value, context): RuleSet => 
   catch (error) { context.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid ruleset revision" }); return z.NEVER; }
 });
 const scopeSchema = z.object({ apiUrl: z.string().url(), accountId: z.string().min(1) }).strict();
-const entrySchema = z.object({ scope: scopeSchema, activeRevision: z.string().regex(/^[a-f0-9]{64}$/), draft: ruleSetDraftSchema, revisions: z.array(ruleSetSchema).nonempty() }).strict().superRefine((entry, context) => {
+const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const presetName = z.string().trim().min(1).max(100);
+const presetKey = (name: string) => name.trim().toLowerCase();
+const presetSchema = z.object({ id: z.string().uuid(), name: presetName, ruleset: ruleSetDraftSchema, revision }).strict();
+export const saveRulePresetSchema = z.object({ name: presetName, ruleset: ruleSetDraftSchema,
+  overwriteId: z.string().uuid().optional(), expectedRevision: revision.optional(),
+}).strict().refine((request) => (request.overwriteId !== undefined) === (request.expectedRevision !== undefined), "Overwrite requires both preset ID and revision");
+export const deleteRulePresetSchema = z.object({ expectedRevision: revision }).strict();
+function initialPresets(): RulePreset[] {
+  return [{ id: "00000000-0000-4000-8000-000000000001", name: "Default rules", ruleset: createDefaultRuleSetDraft(), revision: 1 },
+    ...defaultRulePresets().map((rule, index) => ({ id: `00000000-0000-4000-8000-${String(index + 2).padStart(12, "0")}`,
+      name: rule.name, ruleset: { schemaVersion: 1 as const, rules: [rule] }, revision: 1 }))];
+}
+const presetListSchema = z.array(presetSchema).max(100).superRefine((presets, context) => {
+  if (new Set(presets.map((preset) => preset.id)).size !== presets.length || new Set(presets.map((preset) => presetKey(preset.name))).size !== presets.length) context.addIssue({ code: "custom", message: "Preset IDs and names must be unique" });
+});
+const entrySchema = z.object({ scope: scopeSchema, activeRevision: z.string().regex(/^[a-f0-9]{64}$/), draft: ruleSetDraftSchema,
+  revisions: z.array(ruleSetSchema).nonempty(), savedPresets: presetListSchema.default(initialPresets),
+}).strict().superRefine((entry, context) => {
   if (entry.revisions.filter((r) => r.revision === entry.activeRevision).length !== 1 || new Set(entry.revisions.map((r) => r.revision)).size !== entry.revisions.length) context.addIssue({ code: "custom", message: "Invalid immutable ruleset revision references" });
 });
 const storeSchema = z.object({ version: z.literal(1), scopes: z.array(entrySchema) }).strict().superRefine((store, context) => {
@@ -48,13 +67,13 @@ export function createRulesStore(options: { filePath?: string; io?: JournalFs; n
     let found = store.scopes.find((candidate) => scopeKey(candidate.scope) === key);
     if (!found) {
       const draft = createDefaultRuleSetDraft(); const active = createRuleSet(draft);
-      found = { scope: normalizeScope(scope), activeRevision: active.revision, draft, revisions: [active] };
+      found = { scope: normalizeScope(scope), activeRevision: active.revision, draft, revisions: [active], savedPresets: initialPresets() };
       store.scopes.push(found);
     }
     return found;
   }
   function view(value: ReturnType<typeof entry>): RulesState {
-    return structuredClone({ active: value.revisions.find((r) => r.revision === value.activeRevision)!, draft: value.draft, presets: defaultRulePresets() });
+    return structuredClone({ active: value.revisions.find((r) => r.revision === value.activeRevision)!, draft: value.draft, presets: defaultRulePresets(), savedPresets: value.savedPresets });
   }
   function commit(next: PersistedRules): void {
     storeSchema.parse(next);
@@ -64,6 +83,28 @@ export function createRulesStore(options: { filePath?: string; io?: JournalFs; n
   }
   return {
     async get(scope: ExecutionScope): Promise<RulesState> { return view(entry(load(), scope)); },
+    async savePreset(scope: ExecutionScope, request: SaveRulePresetRequest): Promise<RulesState> {
+      const parsed = saveRulePresetSchema.parse(request);
+      const next = structuredClone(load()), current = entry(next, scope);
+      const existing = current.savedPresets.find((preset) => presetKey(preset.name) === presetKey(parsed.name));
+      if (parsed.overwriteId) {
+        if (!existing || existing.id !== parsed.overwriteId || existing.revision !== parsed.expectedRevision) throw new RulesStoreError("The preset changed or was deleted. Reload presets and confirm again before overwriting.", 409);
+        existing.name = parsed.name; existing.ruleset = parsed.ruleset; existing.revision++;
+      } else {
+        if (existing) throw new RulesStoreError("A preset with this name already exists. Reload presets and confirm an overwrite.", 409);
+        if (current.savedPresets.length >= 100) throw new RulesStoreError("You can save up to 100 presets. Delete an unused preset first.", 400);
+        current.savedPresets.push({ id: randomUUID(), name: parsed.name, ruleset: parsed.ruleset, revision: 1 });
+      }
+      commit(next); return view(current);
+    },
+    async deletePreset(scope: ExecutionScope, id: string, expectedRevision: number): Promise<RulesState> {
+      const parsed = deleteRulePresetSchema.parse({ expectedRevision });
+      const next = structuredClone(load()), current = entry(next, scope);
+      const existing = current.savedPresets.find((preset) => preset.id === id);
+      if (!existing || existing.revision !== parsed.expectedRevision) throw new RulesStoreError("The preset changed or was deleted. Reload presets and confirm again before deleting.", 409);
+      current.savedPresets = current.savedPresets.filter((preset) => preset.id !== id);
+      commit(next); return view(current);
+    },
     async saveDraft(scope: ExecutionScope, draft: RuleSetDraft): Promise<RulesState> {
       const parsed = ruleSetDraftSchema.parse(draft);
       const next = structuredClone(load()); const current = entry(next, scope);

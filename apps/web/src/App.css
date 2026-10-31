@@ -686,6 +686,24 @@ button:focus-visible, summary:focus-visible { outline: 3px solid #1a56db; outlin
 @media (max-width: 600px) { .review-pair { grid-template-columns: minmax(0, 1fr); } }
 
 .rule-editor { border-top: 1px solid #dde2ea; margin-top: 24px; padding-top: 12px; }
+.rule-presets { min-width: 0; margin: 20px 0; padding: 16px; border: 1px solid #dde2ea; border-radius: 8px; }
+.rule-presets .controls { flex-wrap: wrap; }
+.rule-presets input { box-sizing: border-box; width: 320px; max-width: 100%; }
+.rule-presets label { min-width: 0; max-width: 100%; }
+.rule-presets select { min-width: 0; max-width: 100%; }
+.rule-heading { display: flex; align-items: center; gap: 16px; margin: 16px 0; }
+.rule-heading h3 { margin: 0; }
+.rule-enabled { display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+input.rule-switch { appearance: none; position: relative; flex: 0 0 auto; width: 44px; height: 24px; padding: 0; margin: 0; border: 1px solid #68758a; border-radius: 12px; background: #68758a; cursor: pointer; transition: background-color 150ms; }
+.rule-switch::before { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 150ms; }
+.rule-switch:checked { background: #245ac1; border-color: #245ac1; }
+.rule-switch:checked::before { transform: translateX(20px); }
+.rule-switch:focus-visible { outline: 3px solid #245ac1; outline-offset: 3px; }
+.rule-switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.rule-editor .rule-main-controls { justify-content: flex-start; flex-wrap: wrap; }
+.rule-main-controls .rule-name { justify-self: start; max-width: 100%; text-align: left; }
+.rule-name input { box-sizing: border-box; width: 320px; max-width: 100%; text-align: left; }
+@media (prefers-reduced-motion: reduce) { .rule-switch, .rule-switch::before { transition: none; } }
 .rule-condition, .keeper-preferences { border: 1px solid #dde2ea; border-radius: 8px; padding: 12px; margin: 12px 0; min-width: 0; }
 .rule-condition-child { border-left: 2px solid #d6dfeb; padding-left: 12px; margin: 12px 0; }
 .keeper-preferences textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; padding: 10px; font: inherit; }

@@ -142,7 +142,7 @@ File sizes come from `getAssetInfo().exifInfo.fileSizeInByte`, accepting finite 
 
 The pure evaluator in `packages/rule-engine` separates mandatory guards, ordered user rules and keeper preferences. Configuration is a validated version-1 declarative schema, with bounded AND/OR expressions and no executable scripts. Only exactly two distinct, unlinked images with explicit false edited/trashed/favorite/archive/offline flags can qualify. Existing safety protections cannot be disabled in the rule builder.
 
-**Rules** provides draft save, publish, preset cloning, ordering, enable/disable, conditions and keeper preferences. Supported fields include checksum, filename/stem/extension, path, MIME, file size, width/height, pixel count/aspect ratio, dates, device/library IDs, selected EXIF fields and album IDs/names. Operators are validated for each field type. Missing required values yield deferred decisions, including for negative comparisons; an indeterminate earlier rule does not fall through into a permissive inclusion.
+**Rules** provides draft save, publish, preset cloning, ordering, conditions and keeper preferences. Each numbered rule heading has an Enabled slide toggle immediately beside it; the left-aligned Name field is 320 px wide and adapts to smaller screens. Supported fields include checksum, filename/stem/extension, path, MIME, file size, width/height, pixel count/aspect ratio, dates, device/library IDs, selected EXIF fields and album IDs/names. Operators are validated for each field type. Missing required values yield deferred decisions, including for negative comparisons; an indeterminate earlier rule does not fall through into a permissive inclusion.
 
 | Preset | Default and behavior |
 | --- | --- |
@@ -153,6 +153,8 @@ The pure evaluator in `packages/rule-engine` separates mandatory guards, ordered
 A metadata match can include genuinely different images; filenames are useful filters but do not prove content identity. Reviews distinguish checksum and metadata evidence rather than presenting confidence as a probability. AI/perceptual similarity alone never qualifies. Original-byte downloads, decoded-pixel verification, video execution, linked Live Photos and groups larger than two remain unsupported.
 
 Keeper preferences support ranked directories, file size, pixel count and dates. The keeper need not have an external label and same-source pairs are allowed. A tie excludes the group. Unknown keeper metadata defers it. Rule outcomes include revision, matched rule, evidence class, required/missing fields, observed values and dependency fingerprint.
+
+Saved presets store whole `RuleSetDraft` configurations (all rules, order and contents) in each scoped rules-store entry. Selecting one replaces the editor immediately; saving/deleting presets never publishes or changes the saved draft. New preset names create a copy, while matching names (trimmed, case-insensitive) require overwrite confirmation. Deletes require confirmation and keep current editor contents. The API requires the current preset ID/revision for overwrite or deletion and returns 409 for stale targets; Refresh presets reloads the catalog without discarding edits. Frontend rules responses must contain a `savedPresets` array before replacing current state. Missing/null/non-array catalogs show current-API restart/routing guidance, preserve editor/catalog state and allow explicit retry; they are never treated as empty presets. Existing rules files without `savedPresets` gain initial presets lazily on read, without a file rewrite or active-rule changes. An explicitly empty preset list stays empty across restarts.
 
 Rules are scoped to normalized Immich URL/account. Draft edits do not change active decisions. Publication under the coordinator lock activates an immutable canonical revision and invalidates old Quick/full review and dry-run authorization. Draft tests cover every fully observed group in a prepared snapshot, including excluded groups. They are read-only, make no additional Immich requests, cannot authorize execution and cannot add metadata that the snapshot did not contain. Album data in Quick Review remains unknown.
 
@@ -218,7 +220,9 @@ All routes are defined in `apps/api/src/app.ts`. Importing it does not load envi
 | GET | `/immich/assets/:id` | Asset details |
 | GET | `/immich/albums`, `/immich/albums/:id` | Albums / full album details |
 | GET | `/analysis/duplicates?limit=10` | Active-rule decisions and counts |
-| GET | `/rules` | Current scoped active rules, draft and presets |
+| GET | `/rules` | Current scoped active rules, draft, individual rule templates (`presets`) and whole-rule-set `savedPresets` |
+| POST | `/rules/presets` | Save `{ name, ruleset }`; overwrites also require `overwriteId` and `expectedRevision` |
+| DELETE | `/rules/presets/:presetId` | Delete a preset using `{ expectedRevision }`, without changing active rules or draft |
 | PUT | `/rules/draft` | Save validated `{ ruleset }` without activation |
 | POST | `/rules/publish` | Activate immutable `{ ruleset }`; old reviews become stale |
 | POST | `/rules/test` | Test `{ ruleset, snapshotId }` against all completed observed snapshot groups, read-only |

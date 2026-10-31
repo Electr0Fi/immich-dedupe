@@ -19,7 +19,7 @@ import { z } from "zod";
 import { isExecutableDecision } from "./executePlan";
 import type { ExecutionLogEntry, ExecutionLog } from "./executionLog";
 import type { ImmichClient } from "./immichClient";
-import { createRulesStore, ruleSetDraftSchema, type RulesStore } from "./rulesStore";
+import { createRulesStore, ruleSetDraftSchema, saveRulePresetSchema, deleteRulePresetSchema, type RulesStore } from "./rulesStore";
 import { createScanStore, type ScanStore } from "./scanStore";
 
 export type AppDependencies = {
@@ -600,6 +600,18 @@ export function createApp(dependencies: AppDependencies) {
   app.get("/rules", async (_req, res) => {
     res.set("Cache-Control", "no-store");
     try { res.json(await execution.rulesState()); } catch (error) { executionError(res, error); }
+  });
+  app.post("/rules/presets", async (req, res) => {
+    const parsed = saveRulePresetSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ ok: false, error: "Supply a preset name, valid rules and explicit overwrite details when replacing a preset", issues: parsed.error.issues });
+    res.set("Cache-Control", "no-store");
+    try { res.json(await execution.savePreset(parsed.data)); } catch (error) { executionError(res, error); }
+  });
+  app.delete("/rules/presets/:presetId", async (req, res) => {
+    const parsed = deleteRulePresetSchema.safeParse(req.body);
+    if (!z.string().uuid().safeParse(req.params.presetId).success || !parsed.success) return res.status(400).json({ ok: false, error: "Supply a valid preset ID and its revision" });
+    res.set("Cache-Control", "no-store");
+    try { res.json(await execution.deletePreset(req.params.presetId, parsed.data.expectedRevision)); } catch (error) { executionError(res, error); }
   });
   for (const publish of [false, true]) app[publish ? "post" : "put"](publish ? "/rules/publish" : "/rules/draft", async (req, res) => {
     const parsed = z.object({ ruleset: ruleSetDraftSchema }).strict().safeParse(req.body);

@@ -1,6 +1,6 @@
 import { consumeReviewPreparation } from '../src/reviewPreparationStream';
 import { test, expect, type Page, type Route } from '@playwright/test';
-import type { RunView, RunViewResponse } from '@immich-dedupe/shared';
+import type { RunView, RunViewResponse, RulesState, SaveRulePresetRequest } from '@immich-dedupe/shared';
 
 const runId = '00000000-0000-4000-8000-000000000001';
 const attemptId = '00000000-0000-4000-8000-000000000002';
@@ -901,11 +901,12 @@ test('switching quick mode on and off during a cached preview refresh never leav
   await expect(page.getByRole('button', { name: 'Prepare review', exact: true })).toBeEnabled();
 });
 
-function configurableRulesFixture() {
+function configurableRulesFixture(): RulesState & { ok: true } {
   const rule = { id: 'exact', name: 'Identical files', enabled: true, action: 'include' as const, comparison: 'checksum' as const, acknowledgeHeuristic: false,
     conditions: { all: [{ field: 'fileName' as const, operator: 'same' as const }] },
     keeperPreferences: [{ field: 'directory' as const, direction: 'lowest' as const, directories: ['/photos/originals', '/photos/copies'] }] };
-  return { ok: true, active: { schemaVersion: 1 as const, rules: [rule], revision: 'rules-1', engineVersion: '1' as const }, draft: { schemaVersion: 1 as const, rules: [rule] }, presets: [rule] };
+  return { ok: true, active: { schemaVersion: 1 as const, rules: [rule], revision: 'rules-1', engineVersion: '1' as const }, draft: { schemaVersion: 1 as const, rules: [rule] }, presets: [rule],
+    savedPresets: [{ id: '00000000-0000-4000-8000-000000000051', name: 'Camera originals', ruleset: { schemaVersion: 1, rules: [structuredClone(rule)] }, revision: 1 }] };
 }
 
 test('Rules provides a draft builder and publishing clears a previous review and dry-run approval', async ({ page }) => {
@@ -925,6 +926,26 @@ test('Rules provides a draft builder and publishing clears a previous review and
   });
   await page.getByRole('button', { name: 'Rules', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Rules', exact: true })).toBeVisible();
+  const enabled = page.getByRole('switch', { name: 'Enabled', exact: true });
+  await expect(enabled).toBeChecked();
+  await expect(enabled).toHaveCSS('width', '44px');
+  await expect(enabled).toHaveCSS('height', '24px');
+  await expect(enabled).toHaveCSS('border-radius', '12px');
+  const desktop = page.viewportSize();
+  for (const viewport of [desktop!, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const heading = await page.getByRole('heading', { name: 'Rule 1', exact: true }).boundingBox();
+    const label = await page.locator('.rule-enabled').boundingBox();
+    expect(heading).not.toBeNull(); expect(label).not.toBeNull();
+    expect(label!.x - (heading!.x + heading!.width)).toBeCloseTo(16, 0);
+    expect(Math.abs(label!.y + label!.height / 2 - heading!.y - heading!.height / 2)).toBeLessThan(2);
+  }
+  await page.setViewportSize(desktop!);
+  await enabled.uncheck();
+  await expect(enabled).not.toBeChecked();
+  await expect(enabled).toHaveCSS('background-color', 'rgb(104, 117, 138)');
+  await enabled.focus(); await page.keyboard.press('Space');
+  await expect(enabled).toBeChecked();
   await page.getByLabel('Comparison evidence', { exact: true }).selectOption('metadata');
   await page.getByRole('checkbox', { name: /I accept that metadata matching/ }).check();
   await page.getByLabel('Directories, preferred first (one per line)').fill('/directory-a\n/directory-b');
@@ -933,6 +954,170 @@ test('Rules provides a draft builder and publishing clears a previous review and
   await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
   await expect(page.getByRole('checkbox', { name: 'Include group photos' })).toHaveCount(0);
+});
+
+test('Rules presets immediately replace every rule and its settings in the editor', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  const variant = structuredClone(state.draft);
+  variant.rules[0] = { ...variant.rules[0], name: 'Resolution variant', enabled: false, comparison: 'metadata', acknowledgeHeuristic: true,
+    conditions: { field: 'width', operator: 'gt', value: 900, target: 'keeper' }, keeperPreferences: [{ field: 'pixelCount', direction: 'highest' }] };
+  variant.rules.push({ ...structuredClone(variant.rules[0]), id: 'exclude', name: 'Exclude rule', action: 'exclude', enabled: true });
+  state.savedPresets.push({ id: '00000000-0000-4000-8000-000000000052', name: 'Resolution rules', ruleset: variant, revision: 1 });
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByLabel('Preset', { exact: true }).selectOption(state.savedPresets[1].id);
+  await expect(page.locator('.rule-editor')).toHaveCount(2);
+  const first = page.locator('.rule-editor').first(), second = page.locator('.rule-editor').nth(1);
+  await expect(first.getByLabel('Name', { exact: true })).toHaveValue('Resolution variant');
+  await expect(first.getByRole('switch')).not.toBeChecked();
+  await expect(first.getByLabel('Comparison evidence', { exact: true })).toHaveValue('metadata');
+  await expect(first.getByLabel('Field', { exact: true })).toHaveValue('width');
+  await expect(first.getByLabel('Value', { exact: true })).toHaveValue('900');
+  await expect(first.getByLabel('Apply to', { exact: true })).toHaveValue('keeper');
+  await expect(first.getByLabel('Preference 1')).toHaveValue('pixelCount');
+  await expect(first.getByLabel('Prefer', { exact: true })).toHaveValue('highest');
+  await expect(second.getByLabel('Name', { exact: true })).toHaveValue('Exclude rule');
+  await expect(second.getByLabel('Action', { exact: true })).toHaveValue('exclude');
+  await page.getByLabel('Preset', { exact: true }).selectOption(state.savedPresets[0].id);
+  await expect(page.locator('.rule-editor')).toHaveCount(1);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Identical files');
+  await expect(page.getByLabel('Directories, preferred first (one per line)')).toHaveValue('/photos/originals\n/photos/copies');
+});
+
+test('Rules saving confirms new and existing names, preserves edits and restores saved contents after reload', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture(); const requests: SaveRulePresetRequest[] = [];
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  await page.route('**/rules/presets', (route) => {
+    const input: SaveRulePresetRequest = route.request().postDataJSON(); requests.push(input);
+    const existing = state.savedPresets.find((entry) => entry.id === input.overwriteId);
+    if (existing) { expect(input.expectedRevision).toBe(existing.revision); existing.ruleset = structuredClone(input.ruleset); existing.revision++; }
+    else state.savedPresets.push({ id: `00000000-0000-4000-8000-${String(60 + requests.length).padStart(12, '0')}`, name: input.name, ruleset: structuredClone(input.ruleset), revision: 1 });
+    return route.fulfill({ json: state });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Edited rule contents');
+  page.once('dialog', async (dialog) => { expect(dialog.message()).toContain('Overwrite existing preset "Camera originals"'); await dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click(); expect(requests).toHaveLength(0);
+  page.once('dialog', async (dialog) => { expect(dialog.message()).toContain('Overwrite existing preset "Camera originals"'); await dialog.accept(); });
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('saved');
+  expect(requests[0].overwriteId).toBe(state.savedPresets[0].id); expect(requests[0].expectedRevision).toBe(1);
+  expect(requests[0].ruleset.rules[0].name).toBe('Edited rule contents');
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Edited rule contents');
+  await page.getByLabel('Preset name', { exact: true }).fill('New camera preset');
+  page.once('dialog', async (dialog) => { expect(dialog.message()).toBe('Save new preset as "New camera preset"?'); await dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click(); expect(requests).toHaveLength(1);
+  page.once('dialog', async (dialog) => { expect(dialog.message()).toBe('Save new preset as "New camera preset"?'); await dialog.accept(); });
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('New camera preset');
+  expect(requests[1].overwriteId).toBeUndefined(); expect(state.savedPresets).toHaveLength(2);
+  expect(state.active.rules[0].name).toBe('Identical files'); expect(state.draft.rules[0].name).toBe('Identical files');
+  const savedId = state.savedPresets[1].id;
+  await page.reload(); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByLabel('Preset', { exact: true }).selectOption(savedId);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Edited rule contents');
+});
+
+test('Rules creates a preset from an empty editor and deletes it without losing shown or published rules', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture(); let deletes = 0;
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  await page.route('**/rules/presets', (route) => {
+    const input: SaveRulePresetRequest = route.request().postDataJSON();
+    state.savedPresets.push({ id: '00000000-0000-4000-8000-000000000062', name: input.name, ruleset: input.ruleset, revision: 1 });
+    return route.fulfill({ json: state });
+  });
+  await page.route('**/rules/presets/*', (route) => {
+    expect(route.request().method()).toBe('DELETE'); expect(route.request().postDataJSON()).toEqual({ expectedRevision: 1 });
+    deletes++; state.savedPresets = state.savedPresets.filter((entry) => entry.id !== '00000000-0000-4000-8000-000000000062');
+    return route.fulfill({ json: state });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByRole('button', { name: 'New preset', exact: true }).click();
+  await expect(page.locator('.rule-editor')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save preset', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Add rule from template', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('My new rule');
+  await page.getByLabel('Preset name', { exact: true }).fill('My new preset');
+  page.once('dialog', async (dialog) => { expect(dialog.message()).toBe('Save new preset as "My new preset"?'); await dialog.accept(); });
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('saved');
+  page.once('dialog', async (dialog) => { expect(dialog.message()).toContain('Delete preset "My new preset"'); await dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Delete preset', exact: true }).click(); expect(deletes).toBe(0);
+  page.once('dialog', async (dialog) => { expect(dialog.message()).toContain('Delete preset "My new preset"'); await dialog.accept(); });
+  await page.getByRole('button', { name: 'Delete preset', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('deleted'); expect(deletes).toBe(1);
+  await expect(page.getByLabel('Preset', { exact: true }).getByRole('option', { name: 'My new preset', exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('My new rule');
+  expect(state.active.rules[0].name).toBe('Identical files');
+});
+
+test('Rules preset save failures preserve edits and allow refreshing stale presets', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  await page.route('**/rules/presets', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'The preset changed. Refresh presets and confirm again.' } }));
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Unsaved rule edit');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('preset changed');
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Unsaved rule edit');
+  state.savedPresets[0].revision = 2;
+  await page.getByRole('button', { name: 'Refresh presets', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('editor contents were kept');
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Unsaved rule edit');
+});
+
+test('Rules refresh rejects older or malformed preset responses without losing edits or the existing catalog', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  const legacy: Partial<RulesState> = { ...state }; delete legacy.savedPresets;
+  let returned: unknown = state;
+  await page.route('**/rules', (route) => route.fulfill({ json: returned }));
+  const errors: string[] = []; page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Keep my unsaved edit');
+  for (const invalid of [legacy, { ...state, savedPresets: null }, { ...state, savedPresets: {} }]) {
+    returned = invalid;
+    await page.getByRole('button', { name: 'Refresh presets', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('API response is missing saved preset data');
+    await expect(page.getByRole('alert')).toContainText('Restart the API');
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Keep my unsaved edit');
+    await expect(page.getByLabel('Preset', { exact: true })).toHaveValue(state.savedPresets[0].id);
+    await expect(page.getByRole('option', { name: 'Camera originals', exact: true })).toHaveCount(1);
+  }
+  returned = state;
+  await page.getByRole('button', { name: 'Refresh presets', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Preset list refreshed');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Keep my unsaved edit');
+  expect(errors).toEqual([]);
+});
+
+test('Rules can retry an initial legacy response after the API is updated', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  const legacy: Partial<RulesState> = { ...state }; delete legacy.savedPresets;
+  let updated = false;
+  await page.route('**/rules', (route) => route.fulfill({ json: updated ? state : legacy }));
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Restart the API');
+  updated = true;
+  await page.getByRole('button', { name: 'Retry loading rules', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Identical files');
+  await expect(page.getByLabel('Preset', { exact: true })).toHaveValue(state.savedPresets[0].id);
+});
+
+test('Rules preset saves reject a missing catalog without replacing editor contents', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  const legacy: Partial<RulesState> = { ...state }; delete legacy.savedPresets;
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  await page.route('**/rules/presets', (route) => route.fulfill({ json: legacy }));
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Preserve this edit');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('API response is missing saved preset data');
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Preserve this edit');
+  await expect(page.getByRole('status')).toHaveCount(0);
 });
 
 test('Rules snapshot tests show evidence and missing values without authorizing execution', async ({ page }) => {

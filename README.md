@@ -6,7 +6,7 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ### Available now
 
-- Configure ordered comparison rules, presets and directory keeper preferences in **Rules**. Matching Immich checksums is enabled by default; metadata presets require explicit acknowledgement and activation. Draft edits take effect only after publication.
+- Configure ordered comparison rules, presets and directory keeper preferences in **Rules**. Matching Immich checksums is enabled by default; metadata presets require explicit acknowledgement and activation. Each rule has an Enabled toggle beside its heading and a wider, left-aligned Name field. Draft edits take effect only after publication.
 - Continue scanning additional groups in fixed-count or candidate-target mode, with an inspection budget separate from Execute Limit. Scan progress and unresolved pending candidates survive API restarts. Loading pending details creates a fresh review requiring a new dry-run.
 - Optional **Quick Review** evaluates the duplicate-list response without per-image, album or thumbnail reads. Missing rule data remains unverified. Select provisional candidates and **Load selected details**, then dry-run and execute through the existing safety checks.
 
@@ -44,11 +44,15 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ## Configurable rules
 
-Use **Rules** to edit a draft, clone presets, enable or disable rules, change their order and choose keeper preferences. Conditions support filenames/stems/extensions, checksums, paths, MIME, sizes, dimensions, pixel count/aspect ratio, dates, selected EXIF fields and albums, with AND/OR groups. Operators are restricted to appropriate field types. Missing values stay unverified/deferred in both full and Quick Review; they cannot satisfy negative conditions or bypass mandatory protections. The first matching rule determines the outcome, and indeterminate earlier conditions defer the group.
+Use **Rules** to edit a draft, enable or disable rules, change their order and choose keeper preferences. Conditions support filenames/stems/extensions, checksums, paths, MIME, sizes, dimensions, pixel count/aspect ratio, dates, selected EXIF fields and albums, with AND/OR groups. Operators are restricted to appropriate field types. Missing values stay unverified/deferred in both full and Quick Review; they cannot satisfy negative conditions or bypass mandatory protections. The first matching rule determines the outcome, and indeterminate earlier conditions defer the group.
 
 The default **Identical files** preset compares valid stored Immich checksums and consistent metadata. It does not download or independently hash originals. Its directory preferences are seeded from the previous path configuration; adjust them to your actual paths. Ranking ties exclude the group instead of choosing arbitrarily.
 
 **Matching name and dimensions** and **Resolution variants** presets are disabled initially, including on existing installations. Enable heuristic acknowledgement before activating metadata inclusion. These comparisons can include genuinely different images even when filenames match; the review distinguishes **Metadata match** from **Checksum match**. Similarity scores or thumbnails never establish content equality. Videos and groups larger than two remain excluded.
+
+**Saved presets** contain the complete ordered rule set, including conditions, enabled states and keeper preferences. Select a preset to immediately replace all rules shown in the editor. **New preset** starts an empty editor; use **Add rule from template** or clone rules to build it. Enter a preset name and click **Save preset**: an existing name prompts to overwrite, while a new name prompts to create a separate preset. Names are trimmed and matched case-insensitively. Cancel leaves the editor and saved presets unchanged. **Delete preset** asks for confirmation and keeps the current editor and published rules. Presets persist in the scoped rules store across API restarts. Save changes before switching presets; loading another preset replaces unsaved editor contents. If another tab changes a preset, refresh the preset list and confirm again; refreshing preserves the editor.
+
+If refreshing presets reports that saved preset data is missing, restart the API from the current checkout and retry **Refresh presets** (or **Retry loading rules** on initial load). This indicates an older or incompatible API response, not an empty preset list. Existing editor changes and loaded presets are preserved on failed refreshes. Check `VITE_API_BASE_URL` and reverse-proxy routing if the message persists.
 
 Save draft preserves work without changing active decisions. Publish rules activates an immutable account/server-scoped revision and makes previous reviews and dry-run approval stale. Testing a draft against a prepared review includes all completed observed groups, including exclusions, without additional Immich reads or execution authorization. Mandatory protected-asset restrictions remain enforced for every rule and every execution route.
 

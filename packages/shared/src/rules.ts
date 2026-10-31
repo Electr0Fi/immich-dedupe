@@ -31,4 +31,7 @@ export type ConfiguredDecision = DuplicateDecision & {
   dependencyFingerprint: string;
   observedValues: Record<string, Array<string | number | boolean | null>>;
 };
-export type RulesState = { active: RuleSet; draft: RuleSetDraft; presets: ConfigurableRule[] };
+/** A named copy of an entire editor configuration; saving never publishes rules. */
+export type RulePreset = { id: string; name: string; ruleset: RuleSetDraft; revision: number };
+export type SaveRulePresetRequest = { name: string; ruleset: RuleSetDraft; overwriteId?: string; expectedRevision?: number };
+export type RulesState = { active: RuleSet; draft: RuleSetDraft; presets: ConfigurableRule[]; savedPresets: RulePreset[] };

@@ -12,7 +12,7 @@ import { createQuickReviewStore, quickGroupListSchema, evaluateQuickGroup, chang
 import { PrepareQuickSelectionSchema, CreatePlanSchema } from "./executionRequest";
 import { readFreshPreflight, groupListSchema, PreflightSafetyError } from "./freshPreflight";
 import { evaluateConfiguredGroup, evaluateDuplicateGroup, createRuleSet } from "@immich-dedupe/rule-engine";
-import type { RuleSet, RuleSetDraft, CreateReviewedPlanRequest } from "@immich-dedupe/shared";
+import type { RuleSet, RuleSetDraft, CreateReviewedPlanRequest, SaveRulePresetRequest } from "@immich-dedupe/shared";
 import { RulesStoreError, type RulesStore } from "./rulesStore";
 import { ScanStoreError, type ScanStore } from "./scanStore";
 import { normalizeDuplicates } from "./normalizeDuplicates";
@@ -421,6 +421,14 @@ export function createExecutionService(deps: {
       const state = publish ? await deps.rules.publish(scope, draft) : await deps.rules.saveDraft(scope, draft);
       // Revision checks reject old plans even if a browser keeps their IDs.
       return { ok: true as const, ...state };
+    }); },
+    savePreset(request: SaveRulePresetRequest) { return exclusive(async (_, scope) => {
+      if (!deps.rules) throw new ExecutionServiceError(503, "rules_unavailable", "Rule configuration is unavailable");
+      return { ok: true as const, ...await deps.rules.savePreset(scope, request) };
+    }); },
+    deletePreset(id: string, expectedRevision: number) { return exclusive(async (_, scope) => {
+      if (!deps.rules) throw new ExecutionServiceError(503, "rules_unavailable", "Rule configuration is unavailable");
+      return { ok: true as const, ...await deps.rules.deletePreset(scope, id, expectedRevision) };
     }); },
     testRules(snapshotId: string, draft: RuleSetDraft) { return exclusive(async (_, scope) => {
       const plan = plans.get(snapshotId)?.plan;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RULE_FIELDS, type ConfigurableRule, type ConfiguredDecision, type KeeperPreference, type RuleCondition, type RuleSetDraft, type RulesState } from '@immich-dedupe/shared';
-import { getRules, publishRules, saveRulesDraft, testRules } from '../api';
+import { deleteRulePreset, getRules, publishRules, saveRulePreset, saveRulesDraft, testRules } from '../api';
 
 const NUMERIC_FIELDS = new Set(['fileSize', 'width', 'height', 'pixelCount', 'aspectRatio', 'exif.orientation', 'exif.fNumber', 'exif.iso', 'exif.rating']);
 const DATE_FIELDS = new Set(['takenAt', 'fileCreatedAt', 'fileModifiedAt']);
@@ -58,9 +58,15 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
   const [message, setMessage] = useState<string | null>(null);
   const [results, setResults] = useState<ConfiguredDecision[] | null>(null);
   const [preset, setPreset] = useState('');
+  const [presetName, setPresetName] = useState('');
+  const [template, setTemplate] = useState('');
   useEffect(() => {
     let mounted = true;
-    getRules().then((value) => { if (mounted) { setState(value); setDraft(value.draft); setPreset(value.presets[0]?.id ?? ''); } })
+    getRules().then((value) => { if (mounted) {
+      setState(value); setDraft(value.draft); setTemplate(value.presets[0]?.id ?? '');
+      const matching = value.savedPresets?.find((entry) => JSON.stringify(entry.ruleset) === JSON.stringify(value.draft));
+      setPreset(matching?.id ?? ''); setPresetName(matching?.name ?? '');
+    } })
       .catch((reason: unknown) => { if (mounted) setError(reason instanceof Error ? reason.message : 'Rules could not be loaded'); });
     return () => { mounted = false; };
   }, []);
@@ -68,6 +74,58 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
   function edit(rules: ConfigurableRule[]) { if (!draft) return; setDraft({ ...draft, rules }); setResults(null); setMessage(null); }
   function update(index: number, rule: ConfigurableRule) { if (draft) edit(draft.rules.map((entry, position) => index === position ? rule : entry)); }
   function clone(rule: ConfigurableRule) { if (draft) edit([...draft.rules, { ...structuredClone(rule), id: crypto.randomUUID(), name: `${rule.name} (copy)`, enabled: false }]); }
+  function loadPreset(id: string) {
+    const entry = state?.savedPresets?.find((item) => item.id === id);
+    if (!entry) return;
+    setPreset(entry.id); setPresetName(entry.name); setDraft(structuredClone(entry.ruleset));
+    setResults(null); setError(null); setMessage(`Loaded preset “${entry.name}” into the editor. Publish rules to activate it.`);
+  }
+  function newPreset() {
+    setPreset(''); setPresetName(''); setDraft({ schemaVersion: 1, rules: [] });
+    setResults(null); setError(null); setMessage('New preset: enter a name and add rules below.');
+  }
+  async function refreshPresets() {
+    if (busy) return;
+    setWorking(true); setError(null); setMessage(null);
+    try {
+      const value = await getRules(); setState(value);
+      if (!draft) {
+        setDraft(value.draft); setTemplate(value.presets[0]?.id ?? '');
+        const matching = value.savedPresets.find((entry) => JSON.stringify(entry.ruleset) === JSON.stringify(value.draft));
+        setPreset(matching?.id ?? ''); setPresetName(matching?.name ?? '');
+      } else {
+        if (!value.savedPresets.some((entry) => entry.id === preset)) setPreset('');
+      }
+      setMessage('Preset list refreshed. The editor contents were kept.');
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Presets could not be refreshed'); }
+    finally { setWorking(false); }
+  }
+  async function savePreset() {
+    if (!draft || busy || !presetName.trim()) return;
+    const name = presetName.trim();
+    const existing = state?.savedPresets?.find((entry) => entry.name.trim().toLowerCase() === name.toLowerCase());
+    if (!window.confirm(existing ? `Overwrite existing preset "${existing.name}" with the rules currently shown?` : `Save new preset as "${name}"?`)) return;
+    setWorking(true); setError(null); setMessage(null);
+    try {
+      const value = await saveRulePreset({ name, ruleset: draft, ...(existing ? { overwriteId: existing.id, expectedRevision: existing.revision } : {}) });
+      setState(value);
+      const saved = value.savedPresets.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+      setPreset(saved?.id ?? ''); setPresetName(saved?.name ?? name); setResults(null);
+      setMessage(`Preset “${saved?.name ?? name}” saved. Publish rules to activate the editor contents.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Preset could not be saved'); }
+    finally { setWorking(false); }
+  }
+  async function deletePreset() {
+    const entry = state?.savedPresets?.find((item) => item.id === preset);
+    if (busy || !entry || !window.confirm(`Delete preset "${entry.name}"? The rules currently shown and published rules will be kept.`)) return;
+    setWorking(true); setError(null); setMessage(null);
+    try {
+      const value = await deleteRulePreset(entry.id, entry.revision);
+      setState(value); setPreset(''); setPresetName('');
+      setMessage(`Preset “${entry.name}” deleted. The editor contents and published rules were kept.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Preset could not be deleted'); }
+    finally { setWorking(false); }
+  }
   async function act(action: 'save' | 'publish' | 'test') {
     if (!draft || busy) return;
     setWorking(true); setError(null); setMessage(null);
@@ -90,15 +148,24 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
       <p>Only two unlinked images are supported. Favorites, archived, offline, edited and trashed assets remain protected. Missing safety information prevents inclusion. AI similarity alone never qualifies.</p>
       {state && <p className="run-identifier">Active revision: {state.active.revision}</p>}
       {error && <p className="error" role="alert">{error}</p>}{message && <p role="status">{message}</p>}
-      {!draft ? <p>Loading rules…</p> : <>
+      {!draft ? error ? <button disabled={busy} onClick={refreshPresets}>Retry loading rules</button> : <p>Loading rules…</p> : <>
         <div className="buttonRow"><button disabled={busy} onClick={() => act('save')}>Save draft</button><button disabled={busy} onClick={() => act('publish')}>Publish rules</button><button disabled={busy || !snapshotId} onClick={() => act('test')}>Test draft against prepared review</button></div>
         {!snapshotId && <p className="field-hint">Prepare a review on Dedupe to test this draft against its snapshot.</p>}
-        <div className="controls"><label>Preset<select aria-label="Preset" disabled={busy} value={preset} onChange={(event) => setPreset(event.target.value)}>{state?.presets.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label><button disabled={busy || !preset} onClick={() => { const entry = state?.presets.find((item) => item.id === preset); if (entry) clone(entry); }}>Add preset copy</button></div>
+        <fieldset className="rule-presets" disabled={busy}><legend>Saved presets</legend>
+          <div className="controls"><label>Preset<select aria-label="Preset" value={preset} onChange={(event) => loadPreset(event.target.value)}>
+            <option value="" disabled>Current editor / unsaved preset</option>
+            {state?.savedPresets?.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+          </select></label><label>Preset name<input value={presetName} maxLength={100} onChange={(event) => setPresetName(event.target.value)} /></label></div>
+          <div className="buttonRow"><button onClick={newPreset}>New preset</button><button disabled={!presetName.trim()} onClick={savePreset}>Save preset</button><button disabled={!preset} onClick={deletePreset}>Delete preset</button><button onClick={refreshPresets}>Refresh presets</button></div>
+          <p className="field-hint">Presets contain every rule, its settings and order. Selecting a preset replaces the editor contents. Save your changes before switching. A new name saves a separate preset; an existing name asks to overwrite. Saving or deleting a preset does not publish rules.</p>
+        </fieldset>
+        <div className="controls"><label>Rule template<select aria-label="Rule template" disabled={busy} value={template} onChange={(event) => setTemplate(event.target.value)}>{state?.presets.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label><button disabled={busy || !template} onClick={() => { const entry = state?.presets.find((item) => item.id === template); if (entry) clone(entry); }}>Add rule from template</button></div>
         <p>Rules run in order; the first matching rule wins. An earlier rule with missing required information defers the group. Draft changes apply only after publishing.</p>
         {draft.rules.map((rule, index) => <article className="rule-editor" key={rule.id}>
-          <h3>Rule {index + 1}</h3>
-          <div className="controls"><label>Name<input disabled={busy} value={rule.name} onChange={(event) => update(index, { ...rule, name: event.target.value })} /></label>
-            <label className="review-selection"><input type="checkbox" disabled={busy} checked={rule.enabled} onChange={(event) => update(index, { ...rule, enabled: event.target.checked })} />Enabled</label>
+          <div className="rule-heading"><h3>Rule {index + 1}</h3>
+            <label className="rule-enabled"><span>Enabled</span><input className="rule-switch" type="checkbox" role="switch" disabled={busy} checked={rule.enabled} onChange={(event) => update(index, { ...rule, enabled: event.target.checked })} /></label>
+          </div>
+          <div className="controls rule-main-controls"><label className="rule-name">Name<input disabled={busy} value={rule.name} onChange={(event) => update(index, { ...rule, name: event.target.value })} /></label>
             <label>Action<select aria-label="Action" disabled={busy} value={rule.action} onChange={(event) => update(index, { ...rule, action: event.target.value as ConfigurableRule['action'] })}><option value="include">Include group</option><option value="exclude">Exclude group</option></select></label>
             <label>Comparison evidence<select aria-label="Comparison evidence" disabled={busy} value={rule.comparison} onChange={(event) => update(index, { ...rule, comparison: event.target.value as ConfigurableRule['comparison'], acknowledgeHeuristic: false })}><option value="checksum">Checksum match</option><option value="metadata">Metadata match (heuristic)</option></select></label></div>
           {rule.comparison === 'metadata' && <label className="toggle-row"><input type="checkbox" disabled={busy} checked={rule.acknowledgeHeuristic} onChange={(event) => update(index, { ...rule, acknowledgeHeuristic: event.target.checked })} /><span>I accept that metadata matching can include genuinely different images, even when filenames match. This does not prove identical content.</span></label>}

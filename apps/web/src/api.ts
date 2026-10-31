@@ -1,7 +1,7 @@
 import { ApiError, readResponse } from './apiResponse';
 export { ApiError } from './apiResponse';
 import { consumeReviewPreparation, validResult } from './reviewPreparationStream';
-import type { ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
+import type { ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, SaveRulePresetRequest, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
 export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
@@ -310,14 +310,25 @@ export function getReviewedThumbnailUrl(planId: string, assetId: string) {
   return `${API_BASE_URL}/execution/plans/${encodeURIComponent(planId)}/assets/${encodeURIComponent(assetId)}/thumbnail`;
 }
 
-export function getRules() { return apiGet<RulesState & { ok: true }>('/rules'); }
+function checkedRulesState(value: RulesState & { ok: true }) {
+  if (!Array.isArray(value?.savedPresets)) throw new Error('The Dedupe API response is missing saved preset data. Restart the API from the current project checkout, then refresh presets. If this continues, check VITE_API_BASE_URL and reverse-proxy routing. Your editor changes have been kept.');
+  return value;
+}
+export async function getRules() { return checkedRulesState(await apiGet<RulesState & { ok: true }>('/rules')); }
+export async function saveRulePreset(request: SaveRulePresetRequest) { return checkedRulesState(await apiPost<RulesState & { ok: true }>('/rules/presets', request)); }
+export async function deleteRulePreset(id: string, expectedRevision: number) {
+  const path = `/rules/presets/${encodeURIComponent(id)}`;
+  return checkedRulesState(await readResponse<RulesState & { ok: true }>(await fetch(`${API_BASE_URL}${path}`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision }),
+  }), { method: 'DELETE', path }));
+}
 export async function saveRulesDraft(ruleset: RuleSetDraft) {
   const path = '/rules/draft';
-  return readResponse<RulesState & { ok: true }>(await fetch(`${API_BASE_URL}${path}`, {
+  return checkedRulesState(await readResponse<RulesState & { ok: true }>(await fetch(`${API_BASE_URL}${path}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ruleset }),
-  }), { method: 'PUT', path });
+  }), { method: 'PUT', path }));
 }
-export function publishRules(ruleset: RuleSetDraft) { return apiPost<RulesState & { ok: true }>('/rules/publish', { ruleset }); }
+export async function publishRules(ruleset: RuleSetDraft) { return checkedRulesState(await apiPost<RulesState & { ok: true }>('/rules/publish', { ruleset })); }
 export function testRules(ruleset: RuleSetDraft, snapshotId: string) {
   return apiPost<{ ok: true; results: ConfiguredDecision[] }>('/rules/test', { ruleset, snapshotId });
 }
