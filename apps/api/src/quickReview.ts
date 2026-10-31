@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { QuickReview, QuickReviewCandidate, QuickReviewExclusion, ReviewedCandidate, RuleSet, ConfiguredDecision } from '@immich-dedupe/shared';
-import { evaluateDuplicateGroup, evaluateConfiguredGroup } from '@immich-dedupe/rule-engine';
+import { canonicalRulesJson, evaluateDuplicateGroup, evaluateConfiguredGroup } from '@immich-dedupe/rule-engine';
 import { normalizeDuplicates } from './normalizeDuplicates';
 import { PLAN_CAPACITY, PLAN_TTL_MS, projectAsset, reviewedAssetSchema } from './reviewedPlan';
 
@@ -65,7 +65,7 @@ export function changedQuickCandidate(expected: QuickReviewCandidate, fresh: Rev
     const before = expected[side], after = { ...actual[side] };
     // A checksum absent from the duplicate response was never claimed as reviewed.
     if (before.checksum === null) after.checksum = null;
-    if (JSON.stringify(before) !== JSON.stringify(after)) reasons.push(`${side === 'keepAsset' ? 'Keeper' : 'Loser'} metadata or selection changed since Quick Review`);
+    if (canonicalRulesJson(before) !== canonicalRulesJson(after)) reasons.push(`${side === 'keepAsset' ? 'Keeper' : 'Loser'} metadata or selection changed since Quick Review`);
   }
   if (expected.ruleset) {
     if (expected.ruleset.revision !== fresh.ruleset?.revision || expected.decision.matchedRuleId !== actual.decision.matchedRuleId ||
@@ -73,10 +73,22 @@ export function changedQuickCandidate(expected: QuickReviewCandidate, fresh: Rev
     for (const before of expected.ruleAssets ?? []) {
       const after = fresh.ruleAssets?.find((asset) => asset.id === before.id);
       if (!after) { reasons.push('Rule inputs changed since Quick Review'); continue; }
-      const { albums: _albums, albumsKnown: _known, ...input } = before;
-      const { albums: _freshAlbums, albumsKnown: _freshKnown, ...freshInput } = after;
-      if (input.checksum === null) freshInput.checksum = null;
-      if (JSON.stringify(input) !== JSON.stringify(freshInput)) reasons.push('Rule inputs changed since Quick Review');
+      const side = before.id === expected.keepAsset.id ? 'Keeper' : 'Loser';
+      const { albums: _albums, albumsKnown: _known, ruleMetadata, ...input } = before;
+      const { albums: _freshAlbums, albumsKnown: _freshKnown, ruleMetadata: freshMetadata, ...freshInput } = after;
+      // Quick Review only attested to values present in the duplicate response.
+      // New details may fill unknowns; fresh rule evaluation must still select
+      // the same rule and keeper. Previously observed values may not change.
+      for (const [field, value] of Object.entries(input)) {
+        if (value != null && canonicalRulesJson(value) !== canonicalRulesJson(freshInput[field as keyof typeof freshInput])) {
+          reasons.push(`${side} rule input "${field}" changed since Quick Review`);
+        }
+      }
+      for (const [field, value] of Object.entries(ruleMetadata ?? {})) {
+        if (value != null && canonicalRulesJson(value) !== canonicalRulesJson(freshMetadata?.[field])) {
+          reasons.push(`${side} rule input "exif.${field}" changed since Quick Review`);
+        }
+      }
     }
   } else if (JSON.stringify(expected.decision) !== JSON.stringify(actual.decision)) reasons.push('Rule decision changed since Quick Review');
   return reasons;

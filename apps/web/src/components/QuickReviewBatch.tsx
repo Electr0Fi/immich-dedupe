@@ -35,9 +35,13 @@ export function QuickReviewBatch({ execution }: { execution: ExecutionState }) {
       selection={<label className="review-selection"><input type="checkbox" aria-label={`Include group ${candidate.groupId}`} checked={execution.selected.includes(candidate.groupId)}
         disabled={disabled || (!execution.selected.includes(candidate.groupId) && execution.selected.length >= execution.limits.executeLimit)}
         onChange={(event) => execution.selectGroups(event.target.checked ? [...execution.selected, candidate.groupId] : execution.selected.filter((id) => id !== candidate.groupId))} />Include group {candidate.groupId}</label>}>
-      <p>Provisional keeper: {candidate.keepAsset.fileName} · {candidate.keepAsset.originalPath ?? 'Unknown path'}</p>
-      <p>Provisional loser: {candidate.trashAsset.fileName} · {candidate.trashAsset.originalPath ?? 'Unknown path'}</p>
-      {'evidenceClass' in candidate.decision && <p>Comparison: {candidate.decision.evidenceClass === 'checksum' ? 'Checksum match' : 'Metadata match — this does not prove identical content'}</p>}
+      <p>Provisional <span className="provisional-keeper-label">keeper</span>: {candidate.keepAsset.fileName} · {candidate.keepAsset.originalPath ?? 'Unknown path'}
+        <span className="provisional-asset-facts">File size: {candidate.keepAsset.fileSize == null ? 'Unknown' : `${new Intl.NumberFormat().format(candidate.keepAsset.fileSize)} bytes`} · Dimensions: {candidate.keepAsset.width ?? 'Unknown'} × {candidate.keepAsset.height ?? 'Unknown'}</span>
+      </p>
+      <p>Provisional <span className="provisional-loser-label">loser</span>: {candidate.trashAsset.fileName} · {candidate.trashAsset.originalPath ?? 'Unknown path'}
+        <span className="provisional-asset-facts">File size: {candidate.trashAsset.fileSize == null ? 'Unknown' : `${new Intl.NumberFormat().format(candidate.trashAsset.fileSize)} bytes`} · Dimensions: {candidate.trashAsset.width ?? 'Unknown'} × {candidate.trashAsset.height ?? 'Unknown'}</span>
+      </p>
+      {'evidenceClass' in candidate.decision && <p className="provisional-comparison">Comparison: {candidate.decision.evidenceClass === 'checksum' ? 'Checksum match' : 'Metadata match — this does not prove identical content'}</p>}
       <p>Rule: {candidate.decision.matchedRuleName}</p>
       <ul>{candidate.decision.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
       <p>Album memberships and proposed transfers have not been checked.</p>

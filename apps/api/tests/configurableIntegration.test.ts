@@ -45,6 +45,49 @@ test('configured same-source pairs require fresh dry-run and journal v5 before v
   assert.equal(h.scan.getPending(scope).length, 0);
 });
 
+for (const comparison of ['checksum', 'metadata'] as const) test(`configured ${comparison} Quick Review accepts newly loaded optional metadata`, async (t) => {
+  const h = exactHarness(t);
+  const state = await h.rules.get(scope);
+  const rule = state.draft.rules[0];
+  rule.comparison = comparison; rule.acknowledgeHeuristic = comparison === 'metadata';
+  rule.resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };
+  await h.rules.publish(scope, { schemaVersion: 2, rules: [rule] });
+  for (const asset of h.raw.assets) {
+    Reflect.deleteProperty(asset, 'deviceId'); Reflect.deleteProperty(asset, 'fileModifiedAt');
+  }
+  const getInfo = h.client.getAssetInfo;
+  h.client.getAssetInfo = async (args) => {
+    const asset = await getInfo(args);
+    return { ...asset, deviceId: 'newly-loaded-device', fileModifiedAt: '2026-01-01T00:00:00.000Z',
+      originalMimeType: 'image/jpeg', exifInfo: { ...asset.exifInfo, make: 'Samsung', model: 'Galaxy S10' } };
+  };
+  const quick = (await h.service.prepareQuickReview({ scanLimit: 5, executeLimit: 5 })).quickReview!;
+  assert.equal(quick.candidates.length, 1);
+  assert.equal(quick.candidates[0].ruleAssets?.[0].ruleMetadata?.model, null);
+  const { plan } = await h.service.prepareQuickSelection(quick.reviewId, { selectedGroupIds: ['group'], executeLimit: 5 });
+  assert.equal(plan.candidates[0].ruleAssets?.[0].ruleMetadata?.model, 'Galaxy S10');
+  assert.equal(plan.candidates[0].decision.matchedRuleId, quick.candidates[0].decision.matchedRuleId);
+  assert.equal(plan.candidates[0].keepAsset.id, quick.candidates[0].keepAsset.id);
+  assert.deepEqual(plan.candidates[0].proposedAlbumIds, ['missing']);
+  await assert.rejects(h.service.runReviewed(plan.planId, { selectedGroupIds: ['group'], dryRun: false }), /dry-run/);
+  assert.deepEqual(h.mutations, []);
+});
+
+for (const freshValue of ['Changed model', null]) test(`configured Quick Review rejects changed or lost observed EXIF: ${freshValue}`, async (t) => {
+  const h = exactHarness(t); const state = await h.rules.get(scope);
+  state.draft.rules[0].resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };
+  await h.rules.publish(scope, state.draft);
+  h.raw.assets[0].exifInfo = { ...h.raw.assets[0].exifInfo, model: 'Observed model' };
+  const quick = (await h.service.prepareQuickReview({ scanLimit: 5, executeLimit: 5 })).quickReview!;
+  h.raw.assets[0].exifInfo.model = freshValue;
+  await assert.rejects(h.service.prepareQuickSelection(quick.reviewId, { selectedGroupIds: ['group'], executeLimit: 5 }), (error: unknown) => {
+    assert.ok(error instanceof Error && 'details' in error);
+    assert.deepEqual((error.details as { changedGroups: unknown }).changedGroups, [{ groupId: 'group', reasons: ['Keeper rule input "exif.model" changed since Quick Review'] }]);
+    return true;
+  });
+  assert.deepEqual(h.mutations, []);
+});
+
 test('publishing rules invalidates full reviews, Quick upgrades and dry-run authorization', async (t) => {
   const h = exactHarness(t);
   // Original paths tie under seeded directories; choose an explicit keeper.
