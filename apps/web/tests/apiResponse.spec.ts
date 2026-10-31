@@ -9,6 +9,17 @@ async function failure(response: Response, request = endpoint) {
   throw new Error('Expected an API error');
 }
 
+test('Rules errors expose validation details from older APIs without repeating existing messages', async () => {
+  const detail = 'Rule 1: Enable heuristic acknowledgement before activating a metadata inclusion rule';
+  const request = { method: 'POST', path: '/rules/presets' };
+  const error = await failure(Response.json({ error: 'Supply a preset name, valid rules and explicit overwrite details when replacing a preset',
+    issues: [{ message: detail }, { message: detail }, null, { input: 'private payload' }] }, { status: 400 }), request);
+  expect(error.message).toContain(detail); expect(error.message.split(detail)).toHaveLength(2);
+  expect(error.message).not.toContain('private payload');
+  const current = await failure(Response.json({ error: `Preset could not be saved: ${detail}`, issues: [{ message: detail }] }, { status: 400 }), request);
+  expect(current.message.split(detail)).toHaveLength(2);
+});
+
 test('missing Select All routes explain how to restart the API without exposing raw HTML', async () => {
   const error = await failure(new Response('<html>Cannot POST /execution/plans/review-id/select-all</html>', { status: 404, statusText: 'Not Found' }));
   expect(error.status).toBe(404); expect(error.code).toBe('api_endpoint_unavailable');

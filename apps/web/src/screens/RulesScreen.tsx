@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ResolutionEditor } from '../components/ResolutionEditor';
 import { hasStrictByteComparison, newRequirement } from '../resolutionUtils';
-import { RULE_FIELDS, type ConfigurableRule, type ConfiguredDecision, type RuleCondition, type RuleSetDraft, type RulesState } from '@immich-dedupe/shared';
+import { RULE_FIELDS, upgradeResolutionDraft, type ConfigurableRule, type ConfiguredDecision, type RuleCondition, type RuleSetDraft, type RulesState } from '@immich-dedupe/shared';
 import { deleteRulePreset, getRules, publishRules, saveRulePreset, saveRulesDraft, testRules } from '../api';
 
 const NUMERIC_FIELDS = new Set(['fileSize', 'width', 'height', 'pixelCount', 'aspectRatio', 'exif.orientation', 'exif.fNumber', 'exif.iso', 'exif.rating']);
@@ -57,13 +57,17 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
     return () => { mounted = false; };
   }, []);
   const busy = working || disabled;
-  function edit(rules: ConfigurableRule[]) { if (!draft) return; setDraft({ ...draft, rules }); setResults(null); setMessage(null); }
+  function edit(rules: ConfigurableRule[]) { if (!draft) return; setDraft(upgradeResolutionDraft({ ...draft, rules })); setResults(null); setMessage(null); }
   function update(index: number, rule: ConfigurableRule) { if (draft) edit(draft.rules.map((entry, position) => index === position ? rule : entry)); }
-  function clone(rule: ConfigurableRule) { if (draft) edit([...draft.rules, { ...structuredClone(rule), id: crypto.randomUUID(), name: `${rule.name} (copy)`, enabled: false }]); }
+  function clone(rule: ConfigurableRule) {
+    if (!draft) return;
+    const current = rule.resolution ? rule : upgradeResolutionDraft({ schemaVersion: 1, rules: [rule] }).rules[0];
+    edit([...draft.rules, { ...structuredClone(current), id: crypto.randomUUID(), name: `${rule.name} (copy)`, enabled: false }]);
+  }
   function loadPreset(id: string) {
     const entry = state?.savedPresets?.find((item) => item.id === id);
     if (!entry) return;
-    setPreset(entry.id); setPresetName(entry.name); setDraft(structuredClone(entry.ruleset));
+    setPreset(entry.id); setPresetName(entry.name); setDraft(upgradeResolutionDraft(entry.ruleset));
     setResults(null); setError(null); setMessage(`Loaded preset “${entry.name}” into the editor. Publish rules to activate it.`);
   }
   function newPreset() {

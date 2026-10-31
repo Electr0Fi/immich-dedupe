@@ -603,7 +603,10 @@ export function createApp(dependencies: AppDependencies) {
   });
   app.post("/rules/presets", async (req, res) => {
     const parsed = saveRulePresetSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ ok: false, error: "Supply a preset name, valid rules and explicit overwrite details when replacing a preset", issues: parsed.error.issues });
+    if (!parsed.success) {
+      const details = [...new Set(parsed.error.issues.map((issue) => `${issue.path[0] === "name" ? "Preset name: " : ""}${issue.message}`))].slice(0, 8).join("; ");
+      return res.status(400).json({ ok: false, error: `Preset could not be saved: ${details}`, issues: parsed.error.issues });
+    }
     res.set("Cache-Control", "no-store");
     try { res.json(await execution.savePreset(parsed.data)); } catch (error) { executionError(res, error); }
   });

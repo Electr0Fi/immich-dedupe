@@ -7,7 +7,21 @@ import { writeAtomicJson, type JournalFs } from "./atomicJson";
 
 export const ruleSetDraftSchema = z.unknown().transform((value, context): RuleSetDraft => {
   try { assertRuleSetDraft(value); return structuredClone(value); }
-  catch (error) { context.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid ruleset" }); return z.NEVER; }
+  catch (error) {
+    // Locate invalid rules without weakening validation or changing historical evaluation.
+    if (value && typeof value === "object" && "schemaVersion" in value && "rules" in value && Array.isArray(value.rules)) {
+      let invalid = false;
+      value.rules.forEach((rule, index) => {
+        try { assertRuleSetDraft({ schemaVersion: value.schemaVersion, rules: [rule] }); }
+        catch (failure) {
+          invalid = true;
+          context.addIssue({ code: "custom", path: ["rules", index], message: `Rule ${index + 1}: ${failure instanceof Error ? failure.message : "Invalid rule"}` });
+        }
+      });
+      if (invalid) return z.NEVER;
+    }
+    context.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid ruleset" }); return z.NEVER;
+  }
 });
 export const ruleSetSchema = z.unknown().transform((value, context): RuleSet => {
   try { return validateRuleSet(value); }

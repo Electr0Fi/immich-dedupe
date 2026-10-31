@@ -28,6 +28,17 @@ export type ResolutionAssessment = {
     matches: boolean | null; requirements: Array<{ description: string; matches: boolean | null }> }>;
 };
 export type RuleSetDraft = { schemaVersion: 1 | 2; rules: ConfigurableRule[] };
+/** Convert typed editor state without discarding new requirements entered during
+ * a hot reload. Callers must still validate before publishing or persisting. */
+export function upgradeResolutionDraft(draft: RuleSetDraft): RuleSetDraft {
+  if (draft.schemaVersion === 2) return structuredClone(draft);
+  return { schemaVersion: 2, rules: draft.rules.map((rule) => ({ ...structuredClone(rule), keeperPreferences: [],
+    resolution: rule.resolution ? structuredClone(rule.resolution) : { any: rule.keeperPreferences.map((preference, index) => ({ all: [
+      ...rule.keeperPreferences.slice(0, index).map((previous): ResolutionCondition => ({ preference: structuredClone(previous), operator: 'tied' })),
+      { preference: structuredClone(preference), operator: 'better' as const },
+    ] })) },
+  })) };
+}
 export type RuleSet = RuleSetDraft & { revision: string; engineVersion: "1" | "2" };
 export type RuleMetadata = Record<string, string | number | null>;
 export type RuleAsset = AssetRecord & { ruleMetadata?: RuleMetadata };

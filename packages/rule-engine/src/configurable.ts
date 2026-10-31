@@ -1,4 +1,4 @@
-import { RULE_FIELDS } from '@immich-dedupe/shared';
+import { RULE_FIELDS, upgradeResolutionDraft } from '@immich-dedupe/shared';
 import type { ConfigurableRule, ConfiguredDecision, DuplicateGroup, KeeperPreference, ResolutionAssessment, ResolutionCondition, RuleAsset, RuleCondition, RuleField, RuleSet, RuleSetDraft } from '@immich-dedupe/shared';
 import * as historical from './configurableV1';
 export { canonicalRulesJson, directoryMatches, defaultRulePresets, createDefaultRuleSetDraft } from './configurableV1';
@@ -51,13 +51,7 @@ export function assertRuleSetDraft(value: unknown): asserts value is RuleSetDraf
 }
 export function upgradeRuleSetDraft(draft: RuleSetDraft): RuleSetDraft {
   assertRuleSetDraft(draft);
-  if (draft.schemaVersion === 2) return structuredClone(draft);
-  return { schemaVersion: 2, rules: draft.rules.map((rule) => ({ ...structuredClone(rule), keeperPreferences: [],
-    resolution: { any: rule.keeperPreferences.map((preference, index) => ({ all: [
-      ...rule.keeperPreferences.slice(0, index).map((previous): ResolutionCondition => ({ preference: structuredClone(previous), operator: 'tied' })),
-      { preference: structuredClone(preference), operator: 'better' as const },
-    ] })) },
-  })) };
+  return upgradeResolutionDraft(draft);
 }
 export function currentRulePresets(): ConfigurableRule[] { return upgradeRuleSetDraft(historical.createDefaultRuleSetDraft()).rules; }
 export function createCurrentRuleSetDraft(): RuleSetDraft { return { schemaVersion: 2, rules: currentRulePresets() }; }

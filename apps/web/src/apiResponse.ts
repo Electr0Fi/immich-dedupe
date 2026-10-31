@@ -23,7 +23,10 @@ export async function readResponse<T>(response: Response, endpoint: { method: st
     const message = missingEndpoint
       ? `The configured Dedupe API does not provide ${endpoint.method} ${endpoint.path}. Restart the API from the current project checkout, reload this page and prepare a new review. If this continues, check VITE_API_BASE_URL and any reverse-proxy routing.`
       : typeof data?.error === 'string' ? data.error : response.statusText;
-    throw new ApiError(response.status, message + (Array.isArray(data?.changedGroups) ? data.changedGroups.map((g: { groupId: string; reasons: string[] }) => ` Group ${g.groupId}: ${Array.isArray(g.reasons) ? g.reasons.join('; ') : 'changed'}`).join('') : ''),
+    const validationDetails = response.status === 400 && endpoint.path.startsWith('/rules') && Array.isArray(data?.issues)
+      ? [...new Set<string>(data.issues.flatMap((issue: { message?: unknown }) => typeof issue?.message === 'string' && !message.includes(issue.message) ? [issue.message] : []))].slice(0, 8).join('; ')
+      : '';
+    throw new ApiError(response.status, message + (validationDetails ? ` ${validationDetails}` : '') + (Array.isArray(data?.changedGroups) ? data.changedGroups.map((g: { groupId: string; reasons: string[] }) => ` Group ${g.groupId}: ${Array.isArray(g.reasons) ? g.reasons.join('; ') : 'changed'}`).join('') : ''),
       partial && Array.isArray(partial.results) && typeof partial.runId === 'string' ? partial : undefined,
       missingEndpoint ? 'api_endpoint_unavailable' : typeof data?.code === 'string' ? data.code : undefined, typeof data?.runId === 'string' ? data.runId : undefined);
   }

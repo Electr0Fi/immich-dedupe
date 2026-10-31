@@ -1,6 +1,7 @@
 import { ApiError, readResponse } from './apiResponse';
 export { ApiError } from './apiResponse';
 import { consumeReviewPreparation, validResult } from './reviewPreparationStream';
+import { upgradeResolutionDraft } from '@immich-dedupe/shared';
 import type { ResolutionConflict, ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, SaveRulePresetRequest, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
 export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
 
@@ -316,7 +317,7 @@ function checkedRulesState(value: RulesState & { ok: true }) {
   return value;
 }
 export async function getRules() { return checkedRulesState(await apiGet<RulesState & { ok: true }>('/rules')); }
-export async function saveRulePreset(request: SaveRulePresetRequest) { return checkedRulesState(await apiPost<RulesState & { ok: true }>('/rules/presets', request)); }
+export async function saveRulePreset(request: SaveRulePresetRequest) { return checkedRulesState(await apiPost<RulesState & { ok: true }>('/rules/presets', { ...request, ruleset: upgradeResolutionDraft(request.ruleset) })); }
 export async function deleteRulePreset(id: string, expectedRevision: number) {
   const path = `/rules/presets/${encodeURIComponent(id)}`;
   return checkedRulesState(await readResponse<RulesState & { ok: true }>(await fetch(`${API_BASE_URL}${path}`, {
@@ -326,12 +327,12 @@ export async function deleteRulePreset(id: string, expectedRevision: number) {
 export async function saveRulesDraft(ruleset: RuleSetDraft) {
   const path = '/rules/draft';
   return checkedRulesState(await readResponse<RulesState & { ok: true }>(await fetch(`${API_BASE_URL}${path}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ruleset }),
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ruleset: upgradeResolutionDraft(ruleset) }),
   }), { method: 'PUT', path }));
 }
-export async function publishRules(ruleset: RuleSetDraft) { return checkedRulesState(await apiPost<RulesState & { ok: true }>('/rules/publish', { ruleset })); }
+export async function publishRules(ruleset: RuleSetDraft) { return checkedRulesState(await apiPost<RulesState & { ok: true }>('/rules/publish', { ruleset: upgradeResolutionDraft(ruleset) })); }
 export function testRules(ruleset: RuleSetDraft, snapshotId: string) {
-  return apiPost<{ ok: true; results: ConfiguredDecision[] }>('/rules/test', { ruleset, snapshotId });
+  return apiPost<{ ok: true; results: ConfiguredDecision[] }>('/rules/test', { ruleset: upgradeResolutionDraft(ruleset), snapshotId });
 }
 export type PendingCandidate = PendingScanCandidate;
 export function getPendingCandidates() { return apiGet<{ ok: true; pending: PendingCandidate[]; summary: ScanSummary; conflicts?: ResolutionConflict[] }>('/execution/scan/pending'); }

@@ -1071,6 +1071,39 @@ test('Rules saving confirms new and existing names, preserves edits and restores
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Edited rule contents');
 });
 
+test('Rules saves a new preset after removing extra rules and retains rule-specific validation errors', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  state.draft.rules.push({ ...structuredClone(state.draft.rules[0]), id: 'extra', name: 'Extra rule' });
+  let reject = false;
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  await page.route('**/rules/presets', (route) => {
+    const input: SaveRulePresetRequest = route.request().postDataJSON();
+    expect(input.overwriteId).toBeUndefined(); expect(input.expectedRevision).toBeUndefined();
+    expect(input.ruleset.schemaVersion).toBe(2); expect(input.ruleset.rules).toHaveLength(1);
+    expect(input.ruleset.rules[0].name).toBe('Keep this rule');
+    expect(input.ruleset.rules[0].resolution).toEqual(state.draft.rules[0].resolution);
+    if (reject) return route.fulfill({ status: 400, json: { error: 'Supply valid rules', issues: [{ message: 'Rule 1: Enable heuristic acknowledgement before activating a metadata inclusion rule' }] } });
+    state.savedPresets.push({ id: '00000000-0000-4000-8000-000000000063', name: input.name, ruleset: input.ruleset, revision: 1 });
+    return route.fulfill({ json: state });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await expect(page.locator('.rule-editor')).toHaveCount(2);
+  await page.locator('.rule-editor').nth(1).getByRole('button', { name: 'Remove rule', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Keep this rule');
+  await page.getByLabel('Preset name', { exact: true }).fill('Reduced preset');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Reduced preset');
+  await expect(page.locator('.rule-editor')).toHaveCount(1);
+  reject = true;
+  await page.getByLabel('Preset name', { exact: true }).fill('Another preset');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Rule 1: Enable heuristic acknowledgement');
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Keep this rule');
+  await expect(page.getByLabel('Preset name', { exact: true })).toHaveValue('Another preset');
+});
+
 test('Rules creates a preset from an empty editor and deletes it without losing shown or published rules', async ({ page }) => {
   await fakeApi(page); const state = configurableRulesFixture(); let deletes = 0;
   await page.route('**/rules', (route) => route.fulfill({ json: state }));

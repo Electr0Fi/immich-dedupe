@@ -3,6 +3,9 @@ import { once } from 'node:events';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../src/app';
+import { upgradeResolutionDraft } from '@immich-dedupe/shared';
+import { createDefaultRuleSetDraft, assertRuleSetDraft } from '@immich-dedupe/rule-engine';
+import { saveRulePresetSchema } from '../src/rulesStore';
 import { fakeImmich, temporaryJournal, temporaryLog } from './fixtures';
 
 test('preset HTTP API validates explicit overwrite/delete requests and never publishes or mutates Immich', async (t) => {
@@ -30,4 +33,34 @@ test('preset HTTP API validates explicit overwrite/delete requests and never pub
   assert.equal(deleted.status, 200); const final = await deleted.json();
   assert.equal(final.savedPresets.some((entry: { id: string }) => entry.id === preset.id), false);
   assert.deepEqual(final.active, initial.active); assert.deepEqual(final.draft, initial.draft);
+
+  // Removing templates and choosing a new name needs no overwrite credentials.
+  const reduced = structuredClone(initial.draft); reduced.rules = reduced.rules.slice(0, 1);
+  reduced.rules[0].name = 'Only the remaining rule';
+  const reducedResponse = await request('/rules/presets', 'POST', { name: 'Reduced rules', ruleset: reduced });
+  assert.equal(reducedResponse.status, 200);
+  const reducedState = await reducedResponse.json();
+  assert.deepEqual(reducedState.savedPresets.find((entry: { name: string }) => entry.name === 'Reduced rules').ruleset, reduced);
+  assert.deepEqual(reducedState.active, initial.active); assert.deepEqual(reducedState.draft, initial.draft);
+
+  reduced.rules[0].comparison = 'metadata'; reduced.rules[0].acknowledgeHeuristic = false;
+  const invalid = await request('/rules/presets', 'POST', { name: 'Needs acknowledgement', ruleset: reduced });
+  assert.equal(invalid.status, 400);
+  const diagnostic = await invalid.json();
+  assert.match(diagnostic.error, /Rule 1: Enable heuristic acknowledgement/);
+  assert.doesNotMatch(diagnostic.error, /overwrite/i);
+  assert.deepEqual(diagnostic.issues[0].path, ['ruleset', 'rules', 0]);
+});
+
+test('retained legacy editor state upgrades without losing new requirements or weakening server validation', () => {
+  const draft = createDefaultRuleSetDraft(); draft.rules = draft.rules.slice(0, 1);
+  draft.rules[0].resolution = { all: [{ field: 'originalPath', operator: 'prefix', value: '/originals' }, { field: 'fileSize', operator: 'gt', compareTo: 'other' }] };
+  assert.throws(() => assertRuleSetDraft(draft), /Unknown rules configuration property/);
+  assert.equal(saveRulePresetSchema.safeParse({ name: 'New name', ruleset: draft }).success, false);
+  const upgraded = upgradeResolutionDraft(draft);
+  assert.equal(saveRulePresetSchema.safeParse({ name: 'New name', ruleset: upgraded }).success, true);
+  assert.equal(upgraded.schemaVersion, 2);
+  assert.deepEqual(upgraded.rules[0].resolution, draft.rules[0].resolution);
+  assert.deepEqual(upgraded.rules[0].keeperPreferences, []);
+  assert.equal(draft.schemaVersion, 1); assert.notEqual(draft.rules[0].keeperPreferences.length, 0);
 });
