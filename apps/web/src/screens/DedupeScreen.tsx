@@ -1,3 +1,4 @@
+import { ResolutionConflicts } from '../components/ResolutionConflicts';
 import { ScanProgressSummary } from '../components/ScanProgressSummary';
 import { PendingCandidates } from '../components/PendingCandidates';
 import { QuickReviewBatch } from '../components/QuickReviewBatch';
@@ -236,6 +237,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
 
       {execution.quickSnapshot ? <QuickReviewBatch execution={execution} /> : <ReviewedBatch execution={execution} />}
 
+      <ResolutionConflicts execution={execution} />
       <PendingCandidates execution={execution} />
 
       <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />

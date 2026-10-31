@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { DuplicateGroup, ExecutionScope, PendingScanCandidate, ScanClassification, ScanSnapshot } from "@immich-dedupe/shared";
+import type { DuplicateGroup, ExecutionScope, PendingScanCandidate, ScanClassification, ScanSnapshot, ResolutionAssessment } from "@immich-dedupe/shared";
+import { resolutionAssessmentSchema } from "./reviewedPlan";
 import { writeAtomicJson, type JournalFs } from "./atomicJson";
 
 export class ScanStoreError extends Error {
@@ -17,6 +18,7 @@ const pendingSchema = z.object({
   comparisonClass: z.string().nullable(), reason: z.string(), rulesetRevision: z.string().min(1), observedAt: z.iso.datetime(),
 }).strict();
 const entrySchema = z.object({
+  conflict: z.object({ ruleName: z.string().nullable(), observedAt: z.iso.datetime(), assessment: resolutionAssessmentSchema }).strict().optional(),
   groupId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   assetIds: z.array(z.string().min(1)), status: z.enum(["queued", "eligible", "excluded", "deferred", "error", "blocked"]),
   cacheable: z.boolean(), reason: z.string(), observedAt: z.iso.datetime().nullable(), pending: pendingSchema.nullable(),
@@ -49,6 +51,7 @@ export function scanGroupFingerprint(group: DuplicateGroup): string {
   return createHash("sha256").update(canonical({ groupId: group.groupId, assets })).digest("hex");
 }
 export type ScanObservation = {
+  resolution?: ResolutionAssessment; ruleName?: string | null;
   status: ScanClassification;
   reason: string;
   keepAssetId?: string;
@@ -83,6 +86,7 @@ export function createScanStore(options: ScanStoreOptions = {}) {
         if (ids.size !== session.entries.length || new Set(session.queue).size !== session.queue.length ||
           session.queue.length !== queued.size || session.queue.some((id) => !queued.has(id))) throw new Error("Invalid scan queue");
         for (const entry of session.entries) {
+          if (entry.conflict && (!["no-match", "ambiguous"].includes(entry.conflict.assessment.status) || entry.conflict.assessment.assets.some((asset) => !entry.assetIds.includes(asset.id)) || new Set(entry.conflict.assessment.assets.map((asset) => asset.id)).size !== 2 || entry.assetIds.length !== 2)) throw new Error("Invalid resolution conflict membership");
           if (new Set(entry.assetIds).size !== entry.assetIds.length) throw new Error("Invalid membership");
           if ((entry.status === "eligible") !== (entry.pending !== null)) throw new Error("Invalid pending candidate");
           if (entry.pending && (entry.pending.groupId !== entry.groupId || entry.pending.rulesetRevision !== session.rulesetRevision ||
@@ -123,7 +127,7 @@ export function createScanStore(options: ScanStoreOptions = {}) {
       deferredGroups: entries.filter((entry) => entry.status === "deferred" || entry.status === "error").length,
       blockedGroups: entries.filter((entry) => entry.status === "blocked").length,
       pendingCandidates: pending.length, updatedAt: current?.updatedAt ?? new Date(now()).toISOString(),
-    }, pending });
+    }, pending, conflicts: entries.flatMap((entry) => entry.conflict ? [{ groupId: entry.groupId, rulesetRevision: current!.rulesetRevision, ...entry.conflict }] : []) });
   }
   return {
     begin(scope: ExecutionScope, rulesetRevision: string, groups: DuplicateGroup[], blocked: {
@@ -147,6 +151,7 @@ export function createScanStore(options: ScanStoreOptions = {}) {
           (old.status === "queued" || old.status === "eligible" || (old.status === "excluded" && old.cacheable));
         if (!blockedGroup && reusable) entries.push(structuredClone(old));
         else entries.push({ groupId: group.groupId, fingerprint, assetIds: [...new Set(group.assets.map((asset) => asset.id))],
+          ...(!blockedGroup && sameRevision && old?.fingerprint === fingerprint && old.conflict ? { conflict: structuredClone(old.conflict) } : {}),
           status: blockedGroup ? "blocked" : "queued", cacheable: false, reason: blockedGroup ? "Blocked by execution history or recovery quarantine" : "",
           observedAt: null, pending: null });
       }
@@ -190,6 +195,8 @@ export function createScanStore(options: ScanStoreOptions = {}) {
       }
       entry.status = observation.status; entry.reason = observation.reason; entry.observedAt = timestamp;
       entry.cacheable = observation.status === "excluded" && observation.cacheable === true; entry.pending = pending;
+      entry.conflict = observation.resolution && ["no-match", "ambiguous"].includes(observation.resolution.status) && observation.status === "excluded"
+        ? { ruleName: observation.ruleName ?? null, observedAt: timestamp, assessment: observation.resolution } : undefined;
       next.queue = next.queue.filter((id) => id !== groupId); next.updatedAt = timestamp;
       replace(next, writeOptions.deferSave === true); return snapshot(scope);
     },
@@ -204,6 +211,7 @@ export function createScanStore(options: ScanStoreOptions = {}) {
       const next = structuredClone(found.current);
       for (const entry of next.entries) if (["excluded", "deferred", "error"].includes(entry.status)) {
         entry.status = "queued"; entry.cacheable = false; entry.reason = ""; entry.observedAt = null;
+        entry.conflict = undefined;
         if (!next.queue.includes(entry.groupId)) next.queue.push(entry.groupId);
       }
       next.updatedAt = new Date(now()).toISOString(); replace(next); return snapshot(scope);

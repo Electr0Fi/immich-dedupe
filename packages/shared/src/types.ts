@@ -160,7 +160,8 @@ export type ReviewedCandidate = {
   groupId: string; keepAsset: ReviewedAsset; trashAsset: ReviewedAsset; decision: DuplicateDecision;
   requiredAlbumIds: string[]; proposedAlbumIds: string[]; skippedAlbumIds: string[];
 };
-export type ReviewedPlanExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined" | "ineligible" | "unverified"; message: string; attemptIds: string[] };
+export type ReviewedPlanExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined" | "ineligible" | "unverified"; message: string; attemptIds: string[];
+  resolution?: import("./rules").ResolutionAssessment; ruleName?: string | null };
 export type ReviewedPlan = {
   ruleset?: import("./rules").RuleSet;
   scan?: import("./scanning").ScanSnapshot;

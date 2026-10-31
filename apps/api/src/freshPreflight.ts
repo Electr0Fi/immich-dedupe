@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { evaluateDuplicateGroup, evaluateConfiguredGroup } from "@immich-dedupe/rule-engine";
-import type { RuleSet } from "@immich-dedupe/shared";
+import type { RuleSet, ConfiguredDecision, DuplicateGroup } from "@immich-dedupe/shared";
 import { normalizeDuplicates } from "./normalizeDuplicates";
 import type { ImmichClient } from "./immichClient";
 
@@ -21,7 +21,7 @@ const albumListSchema = z.array(z.object({ id: z.string().min(1), albumName: z.s
 export const albumDetailSchema = z.object({ id: z.string().min(1), assets: z.array(z.object({ id: z.string().min(1) })) });
 export const groupListSchema = z.array(z.object({ duplicateId: z.string().min(1), assets: z.array(z.object({ id: z.string().min(1) })) }));
 export class PreflightSafetyError extends Error {
-  constructor(message: string, public classification: "excluded" | "deferred" = "excluded") { super(message); }
+  constructor(message: string, public classification: "excluded" | "deferred" = "excluded", public decision?: ConfiguredDecision, public group?: DuplicateGroup) { super(message); }
 }
 export type PreflightClient = Pick<ImmichClient, "getAssetDuplicates" | "getAssetInfo" | "getAllAlbums">;
 
@@ -89,7 +89,7 @@ export async function readFreshPreflight(client: PreflightClient, groupId: strin
   }
   if (!configuration?.ruleset && decision.status !== "auto-resolve") throw new PreflightSafetyError("Safety guard failed: fresh asset details no longer support the selected resolution");
   if (configuration?.ruleset && decision.status !== "auto-resolve" && !("missingFields" in decision && (decision.missingFields as string[]).some((field) => /(?:^|\.)album(?:Id|Name)$/.test(field)))) {
-    throw new PreflightSafetyError(decision.reasons.join("; "), "outcome" in decision && decision.outcome === "deferred" ? "deferred" : "excluded");
+    throw new PreflightSafetyError(decision.reasons.join("; "), "outcome" in decision && decision.outcome === "deferred" ? "deferred" : "excluded", "engineVersion" in decision ? decision as ConfiguredDecision : undefined, group);
   }
   preparation?.stage("checking-albums");
   const albumLists = await reads(group.assets.map((asset) => albumsFor(asset.id)));
@@ -98,7 +98,7 @@ export async function readFreshPreflight(client: PreflightClient, groupId: strin
   decision = evaluate();
   if (decision.status !== "auto-resolve" || decision.confidence !== 100 || !decision.keepAssetId || decision.trashAssetIds.length !== 1 ||
       (selection && (decision.keepAssetId !== selection.keepId || decision.trashAssetIds[0] !== selection.trashId))) {
-    throw new PreflightSafetyError(configuration?.ruleset ? decision.reasons.join("; ") : "Safety guard failed: fresh asset details no longer support the selected resolution", "outcome" in decision && decision.outcome === "deferred" ? "deferred" : "excluded");
+    throw new PreflightSafetyError(configuration?.ruleset ? decision.reasons.join("; ") : "Safety guard failed: fresh asset details no longer support the selected resolution", "outcome" in decision && decision.outcome === "deferred" ? "deferred" : "excluded", "engineVersion" in decision ? decision as ConfiguredDecision : undefined, group);
   }
   const keepId = decision.keepAssetId, trashId = decision.trashAssetIds[0];
   const keepAlbums = albumLists[group.assets.findIndex((asset) => asset.id === keepId)];

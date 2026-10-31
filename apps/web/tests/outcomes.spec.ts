@@ -1,6 +1,6 @@
 import { consumeReviewPreparation } from '../src/reviewPreparationStream';
 import { test, expect, type Page, type Route } from '@playwright/test';
-import type { RunView, RunViewResponse, RulesState, SaveRulePresetRequest } from '@immich-dedupe/shared';
+import type { RunView, RunViewResponse, RulesState, SaveRulePresetRequest, ResolutionCondition, ResolutionAssessment } from '@immich-dedupe/shared';
 
 const runId = '00000000-0000-4000-8000-000000000001';
 const attemptId = '00000000-0000-4000-8000-000000000002';
@@ -904,9 +904,9 @@ test('switching quick mode on and off during a cached preview refresh never leav
 function configurableRulesFixture(): RulesState & { ok: true } {
   const rule = { id: 'exact', name: 'Identical files', enabled: true, action: 'include' as const, comparison: 'checksum' as const, acknowledgeHeuristic: false,
     conditions: { all: [{ field: 'fileName' as const, operator: 'same' as const }] },
-    keeperPreferences: [{ field: 'directory' as const, direction: 'lowest' as const, directories: ['/photos/originals', '/photos/copies'] }] };
-  return { ok: true, active: { schemaVersion: 1 as const, rules: [rule], revision: 'rules-1', engineVersion: '1' as const }, draft: { schemaVersion: 1 as const, rules: [rule] }, presets: [rule],
-    savedPresets: [{ id: '00000000-0000-4000-8000-000000000051', name: 'Camera originals', ruleset: { schemaVersion: 1, rules: [structuredClone(rule)] }, revision: 1 }] };
+    keeperPreferences: [], resolution: { all: [{ preference: { field: 'directory', direction: 'lowest', directories: ['/photos/originals', '/photos/copies'] }, operator: 'better' }] } as ResolutionCondition };
+  return { ok: true, active: { schemaVersion: 2 as const, rules: [rule], revision: 'rules-1', engineVersion: '2' as const }, draft: { schemaVersion: 2 as const, rules: [rule] }, presets: [rule],
+    savedPresets: [{ id: '00000000-0000-4000-8000-000000000051', name: 'Camera originals', ruleset: { schemaVersion: 2, rules: [structuredClone(rule)] }, revision: 1 }] };
 }
 
 test('Rules provides a draft builder and publishing clears a previous review and dry-run approval', async ({ page }) => {
@@ -920,9 +920,9 @@ test('Rules provides a draft builder and publishing clears a previous review and
     const input = route.request().postDataJSON();
     expect(input.ruleset.rules[0].comparison).toBe('metadata');
     expect(input.ruleset.rules[0].acknowledgeHeuristic).toBe(true);
-    expect(input.ruleset.rules[0].keeperPreferences[0].directories).toEqual(['/directory-a', '/directory-b']);
+    expect(input.ruleset.rules[0].resolution.all[0].preference.directories).toEqual(['/directory-a', '/directory-b']);
     published = true;
-    return route.fulfill({ json: { ...state, draft: input.ruleset, active: { ...input.ruleset, revision: 'rules-2', engineVersion: '1' } } });
+    return route.fulfill({ json: { ...state, draft: input.ruleset, active: { ...input.ruleset, revision: 'rules-2', engineVersion: '2' } } });
   });
   await page.getByRole('button', { name: 'Rules', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Rules', exact: true })).toBeVisible();
@@ -960,7 +960,7 @@ test('Rules presets immediately replace every rule and its settings in the edito
   await fakeApi(page); const state = configurableRulesFixture();
   const variant = structuredClone(state.draft);
   variant.rules[0] = { ...variant.rules[0], name: 'Resolution variant', enabled: false, comparison: 'metadata', acknowledgeHeuristic: true,
-    conditions: { field: 'width', operator: 'gt', value: 900, target: 'keeper' }, keeperPreferences: [{ field: 'pixelCount', direction: 'highest' }] };
+    conditions: { field: 'width', operator: 'gt', value: 900, target: 'keeper' }, keeperPreferences: [], resolution: { field: 'pixelCount', operator: 'gt', compareTo: 'other' } };
   variant.rules.push({ ...structuredClone(variant.rules[0]), id: 'exclude', name: 'Exclude rule', action: 'exclude', enabled: true });
   state.savedPresets.push({ id: '00000000-0000-4000-8000-000000000052', name: 'Resolution rules', ruleset: variant, revision: 1 });
   await page.route('**/rules', (route) => route.fulfill({ json: state }));
@@ -971,15 +971,15 @@ test('Rules presets immediately replace every rule and its settings in the edito
   await expect(first.getByRole('region', { name: '1. Select candidate groups', exact: true })).toBeVisible();
   await expect(first.getByRole('region', { name: '2. Define group resolution', exact: true })).toBeVisible();
   await expect(second.getByRole('region', { name: '2. Define group resolution', exact: true })).toContainText('Excluded groups are not resolved');
-  await expect(second.getByRole('group', { name: 'Choose which asset to keep', exact: true })).toHaveCount(0);
+  await expect(second.getByRole('group', { name: 'Keeper requirements', exact: true })).toHaveCount(0);
   await expect(first.getByLabel('Name', { exact: true })).toHaveValue('Resolution variant');
   await expect(first.getByRole('switch')).not.toBeChecked();
   await expect(first.getByLabel('Comparison evidence', { exact: true })).toHaveValue('metadata');
   await expect(first.getByLabel('Field', { exact: true })).toHaveValue('width');
   await expect(first.getByLabel('Value', { exact: true })).toHaveValue('900');
   await expect(first.getByLabel('Apply to', { exact: true })).toHaveValue('keeper');
-  await expect(first.getByLabel('Preference 1')).toHaveValue('pixelCount');
-  await expect(first.getByLabel('Prefer', { exact: true })).toHaveValue('highest');
+  await expect(first.getByLabel('Requirement field')).toHaveValue('pixelCount');
+  await expect(first.getByLabel('Resolution comparison', { exact: true })).toHaveValue('gt');
   await expect(second.getByLabel('Name', { exact: true })).toHaveValue('Exclude rule');
   await expect(second.getByLabel('Candidate decision', { exact: true })).toHaveValue('exclude');
   await page.getByLabel('Preset', { exact: true }).selectOption(state.savedPresets[0].id);
@@ -996,10 +996,11 @@ test('Rules separates candidate selection from resolution and retains preference
     const { ruleset } = route.request().postDataJSON();
     expect(ruleset.rules[0].action).toBe('exclude');
     expect(ruleset.rules[0].conditions).toEqual(state.draft.rules[0].conditions);
-    expect(ruleset.rules[0].keeperPreferences).toEqual([
-      { field: 'directory', direction: 'lowest', directories: ['/preferred', '/copies'] },
-      { field: 'fileSize', direction: 'highest' },
-    ]);
+    expect(ruleset.rules[0].keeperPreferences).toEqual([]);
+    expect(ruleset.rules[0].resolution).toEqual({ all: [
+      { preference: { field: 'directory', direction: 'lowest', directories: ['/preferred', '/copies'] }, operator: 'better' },
+      { field: 'fileSize', operator: 'gt', compareTo: 'other' },
+    ] });
     saved = true;
     return route.fulfill({ json: { ...state, draft: ruleset } });
   });
@@ -1012,8 +1013,8 @@ test('Rules separates candidate selection from resolution and retains preference
   const resolution = page.getByRole('region', { name: '2. Define group resolution', exact: true });
   await expect(selection.getByLabel('Candidate decision', { exact: true })).toHaveValue('include');
   await expect(selection.getByLabel('Comparison evidence', { exact: true })).toBeVisible();
-  await expect(selection).toContainText('use the keeper preferences in Stage 2');
-  await expect(resolution.getByRole('group', { name: 'Choose which asset to keep', exact: true })).toBeVisible();
+  await expect(selection).toContainText('use the resolution requirements in Stage 2');
+  await expect(resolution.getByRole('group', { name: 'Keeper requirements', exact: true })).toBeVisible();
   await expect(resolution.getByText('Always applied', { exact: true })).toBeVisible();
   const steps = resolution.locator('.rule-resolution-safeguards li');
   await expect(steps).toHaveCount(4);
@@ -1023,19 +1024,17 @@ test('Rules separates candidate selection from resolution and retains preference
   await expect(steps.nth(3)).toContainText('Verify the other asset');
   await expect(resolution.getByRole('checkbox')).toHaveCount(0);
   await resolution.getByLabel('Directories, preferred first (one per line)').fill('/preferred\n/copies');
-  await resolution.getByRole('button', { name: 'Add keeper preference', exact: true }).click();
-  await resolution.getByLabel('Preference 2').selectOption('fileSize');
-  await resolution.getByLabel('Prefer', { exact: true }).selectOption('highest');
+  await resolution.getByRole('button', { name: 'Add requirement', exact: true }).click();
   await selection.getByLabel('Candidate decision', { exact: true }).selectOption('exclude');
   await expect(resolution).toContainText('Excluded groups are not resolved');
-  await expect(resolution.getByRole('group', { name: 'Choose which asset to keep', exact: true })).toHaveCount(0);
+  await expect(resolution.getByRole('group', { name: 'Keeper requirements', exact: true })).toHaveCount(0);
   await expect(resolution.getByText('Always applied', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Save draft', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Draft saved'); expect(saved).toBe(true);
   await selection.getByLabel('Candidate decision', { exact: true }).selectOption('include');
   await expect(resolution.getByLabel('Directories, preferred first (one per line)')).toHaveValue('/preferred\n/copies');
-  await expect(resolution.getByLabel('Preference 2')).toHaveValue('fileSize');
-  await expect(resolution.getByLabel('Prefer', { exact: true })).toHaveValue('highest');
+  await expect(resolution.getByLabel('Requirement field').nth(1)).toHaveValue('fileSize');
+  await expect(resolution.getByLabel('Resolution comparison', { exact: true })).toHaveValue('gt');
 });
 
 test('Rules saving confirms new and existing names, preserves edits and restores saved contents after reload', async ({ page }) => {
@@ -1215,4 +1214,83 @@ test('Candidate-target scans pass a separate budget and preserve pending proposa
   await page.getByRole('button', { name: 'Prepare selected pending candidates', exact: true }).click();
   await expect(page.getByText(/Fresh details loaded for pending candidates/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+});
+
+test('Rules builds directory AND larger requirements, persists them, and can change AND to OR', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  state.requiresResolutionUpgrade = true;
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  let saved: ResolutionCondition | undefined;
+  await page.route('**/rules/presets', (route) => {
+    const input: SaveRulePresetRequest = route.request().postDataJSON();
+    expect(input.ruleset.schemaVersion).toBe(2); expect(input.ruleset.rules[0].keeperPreferences).toEqual([]);
+    saved = input.ruleset.rules[0].resolution;
+    expect(saved).toEqual({ all: [
+      { field: 'originalPath', operator: 'prefix', value: '/preferred', includeSubdirectories: true },
+      { field: 'fileSize', operator: 'gt', compareTo: 'other' },
+    ] });
+    state.savedPresets[0].ruleset = input.ruleset;
+    return route.fulfill({ json: state });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  await expect(page.getByText(/Your presets and draft were converted/)).toBeVisible();
+  const resolution = page.getByRole('region', { name: '2. Define group resolution', exact: true });
+  await resolution.getByLabel('Requirement field', { exact: true }).selectOption('originalPath');
+  await resolution.getByLabel('Required value', { exact: true }).fill('/preferred');
+  await expect(resolution.getByRole('checkbox', { name: 'Include subdirectories', exact: true })).toBeChecked();
+  await resolution.getByRole('button', { name: 'Add requirement', exact: true }).click();
+  await expect(resolution.getByLabel('Resolution comparison', { exact: true }).nth(1)).toHaveValue('gt');
+  await expect(resolution.getByLabel('Compare against', { exact: true })).toHaveValue('other');
+  await expect(resolution.getByText(/Matching checksums require equal file sizes/)).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Save preset', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('saved'); expect(saved).toBeDefined();
+  await resolution.getByLabel('Resolution match', { exact: true }).selectOption('any');
+  await expect(resolution.getByLabel('Resolution match', { exact: true })).toHaveValue('any');
+  await resolution.getByRole('checkbox', { name: 'Include subdirectories', exact: true }).uncheck();
+  await page.getByLabel('Candidate decision', { exact: true }).selectOption('exclude');
+  await expect(resolution.getByLabel('Resolution match', { exact: true })).toHaveCount(0);
+  await page.getByLabel('Candidate decision', { exact: true }).selectOption('include');
+  await expect(resolution.getByLabel('Resolution match', { exact: true })).toHaveValue('any');
+  await expect(resolution.getByRole('checkbox', { name: 'Include subdirectories', exact: true })).not.toBeChecked();
+});
+
+test('Dedupe exposes collapsed and retained resolution conflicts without allowing selection', async ({ page }) => {
+  await fakeApi(page, null);
+  const assessment: ResolutionAssessment = { status: 'no-match', assets: [
+    { id:'small',fileName:'photo.jpg',path:'/preferred/photo.jpg',fileSize:100,width:2000,height:1000,matches:false,requirements:[{description:'Directory is within /preferred',matches:true},{description:'File size (bytes) is greater than the other asset',matches:false}] },
+    { id:'large',fileName:'photo.jpg',path:'/copies/photo.jpg',fileSize:200,width:2000,height:1000,matches:false,requirements:[{description:'Directory is within /preferred',matches:false},{description:'File size (bytes) is greater than the other asset',matches:true}] },
+  ] };
+  let retained = false;
+  await page.route('**/execution/scan/pending', (route) => route.fulfill({ json: { ok:true,pending:[],conflicts:retained ? [{groupId:'conflict',ruleName:'Originals and larger',rulesetRevision:'rules-2',observedAt:new Date().toISOString(),assessment}] : [] } }));
+  await page.route('**/execution/plans', (route) => {
+    const plan = { ...reviewPlan(), candidates:[],excludedGroups:[{groupId:'conflict',reason:'ineligible',message:'Resolution conflict: no asset meets all requirements',attemptIds:[],ruleName:'Originals and larger',resolution:assessment}] };
+    retained = true; return route.fulfill({json:{ok:true,plan}});
+  });
+  await page.goto('/'); await page.getByRole('button', {name:'Dedupe',exact:true}).click();
+  await page.getByRole('button',{name:'Prepare review',exact:true}).click();
+  const conflicts = page.getByRole('region',{name:'Resolution conflicts (1)',exact:true});
+  await expect(conflicts).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:'Include group conflict'})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Dry-run selected',exact:true})).toBeDisabled();
+  await conflicts.getByRole('button',{name:'View resolution conflicts',exact:true}).click();
+  await conflicts.getByText('Group conflict: Resolution conflict',{exact:true}).click();
+  await expect(conflicts.getByText('Path: /preferred/photo.jpg',{exact:true})).toBeVisible();
+  await expect(conflicts.getByText('Path: /copies/photo.jpg',{exact:true})).toBeVisible();
+  await expect(conflicts.getByText(/File size: 100 bytes/)).toBeVisible();
+  await expect(conflicts.getByText(/File size: 200 bytes/)).toBeVisible();
+  await page.reload(); await page.getByRole('button',{name:'Dedupe',exact:true}).click();
+  await expect(page.getByRole('region',{name:'Resolution conflicts (1)',exact:true})).toBeVisible();
+});
+
+test('Rules rejects an older resolution API format rather than displaying different keeper behavior', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  let updated = false;
+  await page.route('**/rules', (route) => route.fulfill({json:updated ? state : {...state,draft:{...state.draft,schemaVersion:1}}}));
+  await page.goto('/'); await page.getByRole('button',{name:'Rules',exact:true}).click();
+  await expect(page.getByRole('alert')).toContainText('does not support the current AND/OR resolution format');
+  await expect(page.locator('.rule-editor')).toHaveCount(0);
+  updated = true; await page.getByRole('button',{name:'Retry loading rules',exact:true}).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByLabel('Name',{exact:true})).toHaveValue('Identical files');
 });

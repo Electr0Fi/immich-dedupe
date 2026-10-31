@@ -56,7 +56,7 @@ test("presets persist complete rule sets separately from drafts and active revis
   const initial = await store.get(scope), ruleset = structuredClone(initial.draft);
   ruleset.rules.reverse(); ruleset.rules[0].name = "Custom rule contents";
   ruleset.rules[0].conditions = { all: [{ field: "fileName", operator: "same" }, { field: "width", operator: "between", value: [100, 800] }] };
-  ruleset.rules[0].keeperPreferences = [{ field: "directory", direction: "lowest", directories: ["/directory-a", "/directory-b"] }];
+  ruleset.rules[0].resolution = { all: [{ field: "originalPath", operator: "prefix", value: "/directory-a" }, { field: "fileSize", operator: "gt", compareTo: "other" }] };
   const result = await store.savePreset(scope, { name: "  My rules  ", ruleset });
   const saved = result.savedPresets.find((preset) => preset.name === "My rules")!;
   assert.deepEqual(saved.ruleset, ruleset);

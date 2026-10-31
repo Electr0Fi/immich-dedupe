@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { RULE_FIELDS, type ConfigurableRule, type ConfiguredDecision, type KeeperPreference, type RuleCondition, type RuleSetDraft, type RulesState } from '@immich-dedupe/shared';
+import { ResolutionEditor } from '../components/ResolutionEditor';
+import { hasStrictByteComparison, newRequirement } from '../resolutionUtils';
+import { RULE_FIELDS, type ConfigurableRule, type ConfiguredDecision, type RuleCondition, type RuleSetDraft, type RulesState } from '@immich-dedupe/shared';
 import { deleteRulePreset, getRules, publishRules, saveRulePreset, saveRulesDraft, testRules } from '../api';
 
 const NUMERIC_FIELDS = new Set(['fileSize', 'width', 'height', 'pixelCount', 'aspectRatio', 'exif.orientation', 'exif.fNumber', 'exif.iso', 'exif.rating']);
@@ -34,22 +36,6 @@ function ConditionEditor({ value, onChange, disabled, depth = 0 }: { value: Rule
       }} /></label></>}
   </fieldset>;
 }
-function KeeperEditor({ preferences, onChange, disabled }: { preferences: KeeperPreference[]; onChange: (next: KeeperPreference[]) => void; disabled: boolean }) {
-  function update(index: number, next: KeeperPreference) { onChange(preferences.map((entry, position) => position === index ? next : entry)); }
-  return <fieldset disabled={disabled} className="keeper-preferences"><legend>Choose which asset to keep</legend>
-    <p>Preferences are applied in priority order. Choose the copy in directory A before directory B. Directory matching respects path boundaries. Tied or missing keeper preferences can prevent inclusion.</p>
-    {preferences.map((preference, index) => <div className="rule-condition" key={index}>
-      <div className="controls"><label>Preference {index + 1}<select value={preference.field} onChange={(event) => update(index, { field: event.target.value as KeeperPreference['field'], direction: preference.direction, ...(event.target.value === 'directory' ? { directories: [] } : {}) })}>
-        <option value="directory">Directory order</option><option value="fileSize">File size</option><option value="pixelCount">Resolution (pixel count)</option><option value="takenAt">Capture date</option><option value="fileModifiedAt">Modified date</option>
-      </select></label>
-      {preference.field !== 'directory' && <label>Prefer<select aria-label="Prefer" value={preference.direction} onChange={(event) => update(index, { ...preference, direction: event.target.value as KeeperPreference['direction'] })}><option value="highest">Highest / newest</option><option value="lowest">Lowest / oldest</option></select></label>}</div>
-      {preference.field === 'directory' && <label>Directories, preferred first (one per line)<textarea rows={3} value={(preference.directories ?? []).join('\n')} onChange={(event) => update(index, { ...preference, directories: event.target.value.split('\n') })} placeholder={'/photos/originals\n/photos/copies'} /></label>}
-      <div className="buttonRow"><button type="button" disabled={index === 0} onClick={() => { const next = [...preferences]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; onChange(next); }}>Move preference up</button><button type="button" onClick={() => onChange(preferences.filter((_, position) => position !== index))}>Remove preference</button></div>
-    </div>)}
-    <button type="button" onClick={() => onChange([...preferences, { field: 'directory', direction: 'lowest', directories: [] }])}>Add keeper preference</button>
-  </fieldset>;
-}
-
 export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: string | null; disabled: boolean; onPublish: () => void }) {
   const [state, setState] = useState<RulesState | null>(null);
   const [draft, setDraft] = useState<RuleSetDraft | null>(null);
@@ -81,7 +67,7 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
     setResults(null); setError(null); setMessage(`Loaded preset “${entry.name}” into the editor. Publish rules to activate it.`);
   }
   function newPreset() {
-    setPreset(''); setPresetName(''); setDraft({ schemaVersion: 1, rules: [] });
+    setPreset(''); setPresetName(''); setDraft({ schemaVersion: 2, rules: [] });
     setResults(null); setError(null); setMessage('New preset: enter a name and add rules below.');
   }
   async function refreshPresets() {
@@ -153,6 +139,7 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
     <section className="card"><h2>Active rules and draft</h2>
       <p>Only two unlinked images are supported. Favorites, archived, offline, edited and trashed assets remain protected. Missing safety information prevents inclusion. AI similarity alone never qualifies.</p>
       {state && <p className="run-identifier">Active revision: {state.active.revision}</p>}
+      {state?.requiresResolutionUpgrade && <p className="resolution-notice">Your presets and draft were converted to equivalent AND/OR requirements. Review and publish the updated draft before preparing new reviews. Previously published rules and historical evidence were preserved.</p>}
       {error && <p className="error" role="alert">{error}</p>}{message && <p role="status">{message}</p>}
       {!draft ? error ? <button disabled={busy} onClick={refreshPresets}>Retry loading rules</button> : <p>Loading rules…</p> : <>
         <div className="buttonRow"><button disabled={busy} onClick={() => act('save')}>Save draft</button><button disabled={busy} onClick={() => act('publish')}>Publish rules</button><button disabled={busy || !snapshotId} onClick={() => act('test')}>Test draft against prepared review</button></div>
@@ -178,14 +165,17 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
             <div className="controls rule-main-controls"><label>Candidate decision<select aria-label="Candidate decision" disabled={busy} value={rule.action} onChange={(event) => update(index, { ...rule, action: event.target.value as ConfigurableRule['action'] })}><option value="include">Include group</option><option value="exclude">Exclude group</option></select></label>
             <label>Comparison evidence<select aria-label="Comparison evidence" disabled={busy} value={rule.comparison} onChange={(event) => update(index, { ...rule, comparison: event.target.value as ConfigurableRule['comparison'], acknowledgeHeuristic: false })}><option value="checksum">Checksum match</option><option value="metadata">Metadata match (heuristic)</option></select></label></div>
             {rule.comparison === 'metadata' && <label className="toggle-row"><input type="checkbox" disabled={busy} checked={rule.acknowledgeHeuristic} onChange={(event) => update(index, { ...rule, acknowledgeHeuristic: event.target.checked })} /><span>I accept that metadata matching can include genuinely different images, even when filenames match. This does not prove identical content.</span></label>}
-            <p className="field-hint">Conditions referring to the proposed keeper or loser use the keeper preferences in Stage 2.</p>
+            <p className="field-hint">Conditions referring to the proposed keeper or loser use the resolution requirements in Stage 2.</p>
             <ConditionEditor value={rule.conditions} onChange={(conditions) => update(index, { ...rule, conditions })} disabled={busy} />
           </section>
           <section className="rule-stage" aria-labelledby={`rule-resolution-${index}`}>
             <h4 id={`rule-resolution-${index}`}>2. Define group resolution</h4>
-            {rule.action === 'exclude' ? <p>Excluded groups are not resolved. Any stored keeper preferences are retained, including for conditions that reference the proposed keeper or loser, and are shown again when you switch to Include group.</p> : <>
-              <p>For included groups, these preferences define the proposed keeper. The other asset will be trashed during execution. Missing required keeper information defers the group; tied preferences exclude it.</p>
-              <KeeperEditor preferences={rule.keeperPreferences} onChange={(keeperPreferences) => update(index, { ...rule, keeperPreferences })} disabled={busy} />
+            {rule.action === 'exclude' ? <p>Excluded groups are not resolved. Any stored resolution requirements are retained, including for conditions that reference the proposed keeper or loser, and are shown again when you switch to Include group.</p> : <>
+              <p>For included groups, these preferences define the proposed keeper. The other asset will be trashed during execution. Missing required information defers the group; no unique match excludes it.</p>
+              <p>Keep an asset only when its requirements match uniquely. AND requires every condition; OR accepts any branch but does not assign priority. If neither or both assets qualify, exclude and flag the group.</p>
+              <ResolutionEditor value={rule.resolution ?? { all: [newRequirement()] }} onChange={(resolution) => update(index, { ...rule, keeperPreferences: [], resolution })} disabled={busy} />
+              {rule.comparison === 'checksum' && rule.resolution && hasStrictByteComparison(rule.resolution) && <p className="field-hint">Matching checksums require equal file sizes. A strictly larger byte-size requirement cannot match them; in an AND group it prevents inclusion. File size and resolution are different comparisons.</p>}
+              <p className="field-hint">When no unique asset matches: Exclude and flag. No fallback or override is applied.</p>
               <div className="rule-resolution-safeguards">
                 <h5>Album preservation <span className="rule-policy-badge">Always applied</span></h5>
                 <ol>

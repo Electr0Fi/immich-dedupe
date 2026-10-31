@@ -1,4 +1,4 @@
-import type { ReviewPreparationProgress, QuickReview } from '@immich-dedupe/shared';
+import type { ResolutionConflict, ReviewPreparationProgress, QuickReview } from '@immich-dedupe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clearDedupeCache } from './dedupeCache';
 import { getPendingCandidates, preparePendingCandidates, recheckExcludedGroups, resetScanProgress, type PendingCandidate, type ScanSummary, type ScanRequest, ApiError, getLatestRun, getRun, prepareReviewedPlan, prepareQuickReview, prepareQuickSelection, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
@@ -27,6 +27,7 @@ export function useExecution(open: boolean) {
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [scanOptions, setScanOptions] = useState<ScanRequest>({ mode: 'groups' });
+  const [resolutionConflicts, setResolutionConflicts] = useState<ResolutionConflict[]>([]);
   const [pendingCandidates, setPendingCandidates] = useState<PendingCandidate[]>([]);
   const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -59,7 +60,7 @@ export function useExecution(open: boolean) {
   const applyLatest = useCallback((value: RunViewResponse, current: number) => {
     if (!mounted.current || version.current !== current) return;
     const key = JSON.stringify(value.scope);
-    if (scope.current && scope.current !== key) { setPartialRun(null); setRequest(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
+    if (scope.current && scope.current !== key) { setResolutionConflicts([]); setPendingCandidates([]); setPartialRun(null); setRequest(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
     scope.current = key;
     setRun(value.run); setReadError(null);
     setPartialRun((partial) => partial && partial.runId === value.run?.runId ? {
@@ -96,7 +97,7 @@ export function useExecution(open: boolean) {
   useEffect(() => {
     if (!open || pending.current) return;
     let active = true;
-    getPendingCandidates().then((value) => { if (active && mounted.current) { setPendingCandidates(value.pending); setScanSummary(value.summary); setScanError(null); } })
+    getPendingCandidates().then((value) => { if (active && mounted.current) { setPendingCandidates(value.pending); setResolutionConflicts(value.conflicts ?? []); setScanSummary(value.summary); setScanError(null); } })
       .catch((error: unknown) => { if (active && mounted.current) setScanError(error instanceof Error ? error.message : 'Scan progress could not be loaded'); });
     return () => { active = false; };
   }, [open]);
@@ -114,7 +115,7 @@ export function useExecution(open: boolean) {
     setInvalid(false); setExpired(false); setReviewError(null); setSelectionMessage(null); setPreparationMessage(null);
     clearDedupeCache();
   }
-  function rulesPublished() { invalidateReview(); void refreshPending(); }
+  function rulesPublished() { setResolutionConflicts([]); invalidateReview(); void refreshPending(); }
   function changeScanOptions(next: ScanRequest) {
     if (pending.current) return;
     setScanOptions(next); invalidateReview();
@@ -125,7 +126,7 @@ export function useExecution(open: boolean) {
     setScanLoading(true); setScanError(null);
     try {
       const data = await getPendingCandidates();
-      if (mounted.current && current === version.current) { setPendingCandidates(data.pending); setScanSummary(data.summary); }
+      if (mounted.current && current === version.current) { setPendingCandidates(data.pending); setResolutionConflicts(data.conflicts ?? []); setScanSummary(data.summary); }
     } catch (error) {
       if (mounted.current && current === version.current) setScanError(error instanceof Error ? error.message : 'Scan progress could not be loaded');
     } finally { if (mounted.current) setScanLoading(false); }
@@ -136,7 +137,7 @@ export function useExecution(open: boolean) {
     try {
       await (action === 'reset' ? resetScanProgress() : recheckExcludedGroups());
       invalidateReview();
-      const data = await getPendingCandidates(); setPendingCandidates(data.pending); setScanSummary(data.summary);
+      const data = await getPendingCandidates(); setPendingCandidates(data.pending); setResolutionConflicts(data.conflicts ?? []); setScanSummary(data.summary);
     } catch (error) { setScanError(error instanceof Error ? error.message : 'Scan progress could not be updated'); }
     finally { setScanLoading(false); }
   }
@@ -321,7 +322,7 @@ export function useExecution(open: boolean) {
         runId: error instanceof ApiError ? error.runId : undefined, partial: error instanceof ApiError && Boolean(error.partialExecution) });
     } finally { pending.current = false; void refreshPending(); }
   }
-  return { scanOptions, changeScanOptions, pendingCandidates, scanSummary, scanError, scanLoading, refreshPending, updateScan, loadPendingCandidates, invalidateReview, rulesPublished, review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
+  return { resolutionConflicts, scanOptions, changeScanOptions, pendingCandidates, scanSummary, scanError, scanLoading, refreshPending, updateScan, loadPendingCandidates, invalidateReview, rulesPublished, review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
     prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
     run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }

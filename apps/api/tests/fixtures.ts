@@ -32,7 +32,7 @@ export function rawAsset(id: string, overrides: Partial<AssetResponseDto> = {}):
 export async function heuristicTestRules(scope: ExecutionScope = { apiUrl: 'http://immich.invalid/api', accountId: 'test-user' }) {
   const rules = createRulesStore(); const state = await rules.get(scope);
   const preset = state.presets.find((rule) => rule.id === 'matching-metadata')!;
-  await rules.publish(scope, { schemaVersion: 1, rules: [{ ...preset, enabled: true, acknowledgeHeuristic: true }] });
+  await rules.publish(scope, { schemaVersion: 2, rules: [{ ...preset, enabled: true, acknowledgeHeuristic: true }] });
   return rules;
 }
 

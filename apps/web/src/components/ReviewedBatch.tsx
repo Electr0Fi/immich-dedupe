@@ -1,3 +1,5 @@
+import { isResolutionConflict } from '../resolutionUtils';
+import { ResolutionConflictDetails } from './ResolutionConflictDetails';
 import { useId, useState, type ReactNode } from 'react';
 import { getReviewedThumbnailUrl, type ReviewedAsset } from '../api';
 import type { ExecutionState } from '../useExecution';
@@ -18,13 +20,14 @@ function AssetComparison({ asset, planId, keeper }: { asset: ReviewedAsset; plan
     <details><summary>Asset ID and path</summary><p className="run-identifier">{asset.id}</p><p className="run-identifier">{asset.originalPath}</p></details>
   </section>;
 }
-export function ReviewGroup({ groupId, title, expanded, onToggle, selection, children }: {
-  groupId: string; title: string; expanded: boolean; onToggle: () => void; selection?: ReactNode; children: ReactNode;
+export function ReviewGroup({ groupId, title, expanded, onToggle, selection, children, conflict = false }: {
+  groupId: string; title: string; expanded: boolean; onToggle: () => void; selection?: ReactNode; children: ReactNode; conflict?: boolean;
 }) {
   const detailsId = useId();
   return <article className="review-candidate" aria-label={`Review group ${groupId}`}>
     <div className="review-candidate-header">
       {selection}
+      {conflict && <span className="resolution-conflict-badge">Resolution conflict</span>}
       <button type="button" className="review-details-toggle" aria-label={`Details for group ${groupId}`}
         aria-expanded={expanded} aria-controls={detailsId} onClick={onToggle}>
         <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
@@ -87,11 +90,12 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
         <p><strong>Already preserved on keeper:</strong> {candidate.trashAsset.albums.filter((a) => candidate.skippedAlbumIds.includes(a.albumId)).map((a) => a.albumName).join(', ') || 'None'}</p>
         <p className="field-hint">Album actions are proposals until execution confirms them. Safety checks run again before any changes.</p>
       </ReviewGroup>)}
+    {review.excludedGroups.some((group) => isResolutionConflict(group.resolution)) && <p className="resolution-notice">Resolution conflicts: {review.excludedGroups.filter((group) => isResolutionConflict(group.resolution)).length} groups excluded. Open their details or View resolution conflicts below.</p>}
       {review.excludedGroups.length > 0 && <section aria-label="Excluded and read-only groups">
         <h3>Excluded and read-only groups ({review.excludedGroups.length})</h3>
         {review.excludedGroups.map((group) => <ReviewGroup key={`${review.planId}-${group.groupId}`} groupId={group.groupId}
-          title={`Group ${group.groupId}: ${group.reason}`} expanded={expandedIds.includes(group.groupId)} onToggle={() => toggleGroup(group.groupId)}>
-          <p>{group.message}</p>
+          conflict={isResolutionConflict(group.resolution)} title={`Group ${group.groupId}: ${isResolutionConflict(group.resolution) ? "Resolution conflict" : group.reason}`} expanded={expandedIds.includes(group.groupId)} onToggle={() => toggleGroup(group.groupId)}>
+          <p>{group.message}</p>{group.resolution && <ResolutionConflictDetails assessment={group.resolution} ruleName={group.ruleName} />}
         </ReviewGroup>)}
       </section>}
     </>}

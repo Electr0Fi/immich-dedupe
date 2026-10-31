@@ -1,3 +1,5 @@
+import { isResolutionConflict } from '../resolutionUtils';
+import { ResolutionConflictDetails } from './ResolutionConflictDetails';
 import { useState } from 'react';
 import type { ExecutionState } from '../useExecution';
 import { ReviewGroup } from './ReviewedBatch';
@@ -40,8 +42,9 @@ export function QuickReviewBatch({ execution }: { execution: ExecutionState }) {
       <ul>{candidate.decision.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
       <p>Album memberships and proposed transfers have not been checked.</p>
     </ReviewGroup>)}
+    {snapshot.excludedGroups.some((group) => isResolutionConflict(group.resolution)) && <p className="resolution-notice">Resolution conflicts: {snapshot.excludedGroups.filter((group) => isResolutionConflict(group.resolution)).length} groups excluded. Open their details or View resolution conflicts below.</p>}
     <h3>Excluded and unverified groups ({snapshot.excludedGroups.length})</h3>
     {snapshot.excludedGroups.map((group) => <ReviewGroup key={`${snapshot.reviewId}-${group.groupId}`} groupId={group.groupId}
-      title={`Group ${group.groupId}: ${group.reason}`} expanded={ids.includes(group.groupId)} onToggle={() => toggle(group.groupId)}><p>{group.message}</p></ReviewGroup>)}
+      conflict={isResolutionConflict(group.resolution)} title={`Group ${group.groupId}: ${isResolutionConflict(group.resolution) ? "Resolution conflict" : group.reason}`} expanded={ids.includes(group.groupId)} onToggle={() => toggle(group.groupId)}><p>{group.message}</p>{group.resolution && <ResolutionConflictDetails assessment={group.resolution} ruleName={group.ruleName} />}</ReviewGroup>)}
   </section>;
 }

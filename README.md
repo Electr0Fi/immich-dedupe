@@ -6,7 +6,7 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ### Available now
 
-- Configure ordered comparison rules, presets and directory keeper preferences in **Rules**. Matching Immich checksums is enabled by default; metadata presets require explicit acknowledgement and activation. Each rule has an Enabled toggle beside its heading and a wider, left-aligned Name field. Draft edits take effect only after publication.
+- Configure ordered comparison rules, presets and AND/OR keeper requirements in **Rules**. Matching Immich checksums is enabled by default; metadata presets require explicit acknowledgement and activation. Each rule has an Enabled toggle beside its heading and a wider, left-aligned Name field. Draft edits take effect only after publication.
 - Continue scanning additional groups in fixed-count or candidate-target mode, with an inspection budget separate from Execute Limit. Scan progress and unresolved pending candidates survive API restarts. Loading pending details creates a fresh review requiring a new dry-run.
 - Optional **Quick Review** evaluates the duplicate-list response without per-image, album or thumbnail reads. Missing rule data remains unverified. Select provisional candidates and **Load selected details**, then dry-run and execute through the existing safety checks.
 
@@ -24,9 +24,9 @@ A local React/Express application for reviewing duplicate groups already identif
 ### Automatic cleanup requirements
 
 - Settings lists the API key permissions for connection checks, reviews, thumbnails and live cleanup. Thumbnails need `asset.view`; metadata access through `asset.read` alone is insufficient. See [Required Immich API key permissions](#required-immich-api-key-permissions).
-- Exactly two unlinked images must satisfy the active published rules. Directory preferences choose which copy to keep; same-source pairs are supported. Unresolved keeper ties are excluded.
+- Exactly two unlinked images must satisfy the active published rules. Resolution requirements choose exactly one keeper; same-source pairs are supported. Unresolved keeper ties are excluded.
 - Favorites, archived/offline assets, edited/trashed assets, linked Live Photo images, videos, and assets with incomplete safety information are excluded.
-- Configure directory preferences in Rules, for example keep `/photos/originals` over `/photos/copies`. Matching is case-sensitive and respects directory boundaries; the current internal/external labels do not determine eligibility.
+- Configure directory requirements in Rules, for example require the keeper to be in `/photos/originals` or a subdirectory AND larger than the other asset. Matching is case-sensitive and respects directory boundaries; the current internal/external labels do not determine eligibility.
 - Album additions must explicitly succeed and keeper memberships must be confirmed before resolution. Resolution must explicitly succeed, the loser must be confirmed trashed with its duplicate association cleared, and the keeper must remain untrashed.
 
 ### Current limitations
@@ -44,19 +44,32 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ## Configurable rules
 
-Use **Rules** to edit a draft, enable or disable rules, change their order and choose keeper preferences. Conditions support filenames/stems/extensions, checksums, paths, MIME, sizes, dimensions, pixel count/aspect ratio, dates, selected EXIF fields and albums, with AND/OR groups. Operators are restricted to appropriate field types. Missing values stay unverified/deferred in both full and Quick Review; they cannot satisfy negative conditions or bypass mandatory protections. The first matching rule determines the outcome, and indeterminate earlier conditions defer the group.
+Use **Rules** to edit a draft, enable or disable rules, change their order and define AND/OR keeper requirements. Conditions support filenames/stems/extensions, checksums, paths, MIME, sizes, dimensions, pixel count/aspect ratio, dates, selected EXIF fields and albums, with AND/OR groups. Operators are restricted to appropriate field types. Missing values stay unverified/deferred in both full and Quick Review; they cannot satisfy negative conditions or bypass mandatory protections. The first matching rule determines the outcome, and indeterminate earlier conditions defer the group.
 
-Each rule has two numbered sections: **1. Select candidate groups** contains the include/exclude decision, comparison evidence and conditions; **2. Define group resolution** chooses the keeper and explains mandatory album preservation, duplicate resolution and verification. Exclusion rules show that no resolution occurs and retain any stored keeper preferences. Conditions referencing the proposed keeper or loser still use those stored preferences. Ties exclude a group and missing keeper information defers it. The workflow is **Select groups → Review proposed resolution → Dry-run → Execute**: saving or publishing rules never resolves duplicates.
+Each rule has two numbered sections: **1. Select candidate groups** contains the include/exclude decision, comparison evidence and conditions; **2. Define group resolution** chooses the keeper and explains mandatory album preservation, duplicate resolution and verification. Exclusion rules show that no resolution occurs and retain stored resolution requirements. Conditions referencing the proposed keeper or loser still use the resolution selection. Ties exclude a group and missing keeper information defers it. The workflow is **Select groups → Review proposed resolution → Dry-run → Execute**: saving or publishing rules never resolves duplicates.
 
 The default **Identical files** preset compares valid stored Immich checksums and consistent metadata. It does not download or independently hash originals. Its directory preferences are seeded from the previous path configuration; adjust them to your actual paths. Ranking ties exclude the group instead of choosing arbitrarily.
 
 **Matching name and dimensions** and **Resolution variants** presets are disabled initially, including on existing installations. Enable heuristic acknowledgement before activating metadata inclusion. These comparisons can include genuinely different images even when filenames match; the review distinguishes **Metadata match** from **Checksum match**. Similarity scores or thumbnails never establish content equality. Videos and groups larger than two remain excluded.
 
-**Saved presets** contain the complete ordered rule set, including conditions, enabled states and keeper preferences. Select a preset to immediately replace all rules shown in the editor. **New preset** starts an empty editor; use **Add rule from template** or clone rules to build it. Enter a preset name and click **Save preset**: an existing name prompts to overwrite, while a new name prompts to create a separate preset. Names are trimmed and matched case-insensitively. Cancel leaves the editor and saved presets unchanged. **Delete preset** asks for confirmation and keeps the current editor and published rules. Presets persist in the scoped rules store across API restarts. Save changes before switching presets; loading another preset replaces unsaved editor contents. If another tab changes a preset, refresh the preset list and confirm again; refreshing preserves the editor.
+**Saved presets** contain the complete ordered rule set, including conditions, enabled states and resolution requirements. Select a preset to immediately replace all rules shown in the editor. **New preset** starts an empty editor; use **Add rule from template** or clone rules to build it. Enter a preset name and click **Save preset**: an existing name prompts to overwrite, while a new name prompts to create a separate preset. Names are trimmed and matched case-insensitively. Cancel leaves the editor and saved presets unchanged. **Delete preset** asks for confirmation and keeps the current editor and published rules. Presets persist in the scoped rules store across API restarts. Save changes before switching presets; loading another preset replaces unsaved editor contents. If another tab changes a preset, refresh the preset list and confirm again; refreshing preserves the editor.
 
 If refreshing presets reports that saved preset data is missing, restart the API from the current checkout and retry **Refresh presets** (or **Retry loading rules** on initial load). This indicates an older or incompatible API response, not an empty preset list. Existing editor changes and loaded presets are preserved on failed refreshes. Check `VITE_API_BASE_URL` and reverse-proxy routing if the message persists.
 
 Save draft preserves work without changing active decisions. Publish rules activates an immutable account/server-scoped revision and makes previous reviews and dry-run approval stale. Testing a draft against a prepared review includes all completed observed groups, including exclusions, without additional Immich reads or execution authorization. Mandatory protected-asset restrictions remain enforced for every rule and every execution route.
+
+## Choosing a keeper with AND/OR requirements
+
+Stage 2 evaluates each image as a potential keeper. Choose **ALL requirements (AND)** or **ANY requirement (OR)**, and nest groups when needed. For example:
+
+- Directory is `/photos/originals`, with **Include subdirectories** checked.
+- **AND** file size (bytes) is greater than **the other asset**.
+
+Exactly one image must satisfy the expression. If the larger image is outside that directory and the smaller is inside, neither qualifies: the group is excluded and flagged as a **Resolution conflict**. Both matching is also a conflict; OR is not an ordered fallback. Missing required metadata remains unverified. There is no warning-only fallback or execution override. File size and resolution/pixel count are separate fields. Matching stored checksums require equal byte sizes, so a strict greater-byte-size requirement cannot distinguish exact copies.
+
+Dedupe displays conflict counts and **View resolution conflicts**, with both paths, sizes, dimensions and requirement results. Conflict badges remain visible on collapsed group rows. Saved conflict observations retain their last-checked time across continued scans/restarts and never authorize execution. Changed rules, memberships, metadata or journal exclusions invalidate them. Quick Review still performs no extra asset or album reads.
+
+Existing presets and drafts are converted automatically when loaded on Rules. Ordered preferences become equivalent expressions: **better on P1 OR (tied on P1 AND better on P2)**. Converted directory-priority requirements preserve the old path order; edit them or replace them with explicit directory requirements. Names/IDs and keeper choices are preserved; saved preset revisions advance once. Published historical rules are not rewritten: review and **Publish rules** before preparing new reviews on an upgraded installation. Historical journal versions 1–4 remain readable; new reviewed execution writes v5.
 
 ## Continued scanning
 
@@ -103,7 +116,7 @@ pnpm dev
 The API defaults to port 3001. Open the Vite URL printed in the terminal, normally `http://localhost:5173`. The servers can also run separately using `pnpm --filter api dev` and `pnpm --filter web dev`.
 
 1. Check the connection in Settings. Restart the API after saving connection changes and reload the browser to refresh the header status.
-2. Open Rules, check directory preferences and publish any changes. Then open Dedupe, choose a scan mode and inspection budget, and set Execute Limit separately.
+2. Open Rules, check resolution requirements and publish any changes. Then open Dedupe, choose a scan mode and inspection budget, and set Execute Limit separately.
 3. Click **Prepare review**. Follow live stages and counts, or click **Cancel review** to stop after outstanding reads settle and keep fully checked results. Compare the keeper/loser images, filenames, sources, dimensions, sizes, and named album changes. Group details start collapsed; use each group’s toggle or **Expand All** / **Collapse All** to inspect thumbnails, metadata, rule explanations and album actions. Use **Select first N** to select up to the review’s Execute Limit, or **Select All** to include all eligible groups in this prepared review. Select All raises Execute Limit when needed and requires a new dry-run; excluded groups remain unselectable.
 4. Click **Dry-run selected**. Changing the selection clears approval. Proposed album transfers have not been performed.
 5. Choose **Execute selected** after the dry-run passes. Confirm the selected group and album-addition counts. Execution rechecks current data and may stop if it changed.
@@ -123,7 +136,7 @@ Groups enter **Provisional candidates** only if available metadata satisfies eve
 
 Quick snapshots are scoped to the server/account, stored only in API memory for 15 minutes, with capacity 20 separately from full plans. They cannot be executed directly or used for image access. Successful detail loading creates a normal immutable full plan with its own 15-minute lifetime, containing exactly the selected groups and no inherited dry-run authorization. Keep/loser metadata and available checksums shown by the quick scan must still match; previously unfetched albums are treated as unknown until loaded. Reload/restart requires new preparation. Cancellation preserves completed quick results, which can still be selected for detail loading.
 
-API: `POST /execution/quick-reviews` accepts the same validated limits as full preparation and returns `{ ok, quickReview }`; with `Accept: application/x-ndjson` it streams progress and a terminal `{ status, plan: null, quickReview }` result. It shares the existing preparation cancellation endpoint. `POST /execution/quick-reviews/:reviewId/prepare-plan` accepts `{ selectedGroupIds, executeLimit }` and returns `{ ok, plan }`. Invalid selection is 400, busy/scope/stale-selection conflicts are 409, expired/missing quick snapshots are 410, and unavailable identity/storage/upstream reads are 503. Quick preparation and detail loading share the coordinator lock. Full plans pin their rules revision, and configurable reviewed runs use journal v4; historical v1–v3 records remain readable. If an updated frontend reports a missing quick endpoint, restart the current API checkout, reload and prepare again.
+API: `POST /execution/quick-reviews` accepts the same validated limits as full preparation and returns `{ ok, quickReview }`; with `Accept: application/x-ndjson` it streams progress and a terminal `{ status, plan: null, quickReview }` result. It shares the existing preparation cancellation endpoint. `POST /execution/quick-reviews/:reviewId/prepare-plan` accepts `{ selectedGroupIds, executeLimit }` and returns `{ ok, plan }`. Invalid selection is 400, busy/scope/stale-selection conflicts are 409, expired/missing quick snapshots are 410, and unavailable identity/storage/upstream reads are 503. Quick preparation and detail loading share the coordinator lock. Full plans pin their rules revision, and configurable reviewed runs use journal v5; historical v1–v4 records remain readable. If an updated frontend reports a missing quick endpoint, restart the current API checkout, reload and prepare again.
 
 ## Required Immich API key permissions
 
@@ -162,7 +175,7 @@ curl -X POST http://localhost:3001/execution/run \
   -d '{"scanLimit":10,"executeLimit":1,"dryRun":true}'
 ```
 
-Display logs live in `apps/api/data/execution-log.json`. Recovery records live separately under `apps/api/data/execution-journal/`, with journal v4 for configurable reviewed runs, v2 for legacy API runs and unchanged v1–v3 read support. Do not downgrade against a data directory containing newer journal versions. Both are ignored by Git. Preserve this directory: clearing display logs does not reset recovery or successful-history exclusions.
+Display logs live in `apps/api/data/execution-log.json`. Recovery records live separately under `apps/api/data/execution-journal/`, with journal v5 for configurable reviewed runs, v2 for legacy API runs and unchanged v1–v4 read support. Do not downgrade against a data directory containing newer journal versions. Both are ignored by Git. Preserve this directory: clearing display logs does not reset recovery or successful-history exclusions.
 
 At first execution or log clearing, recorded successful legacy group IDs are copied once into `legacy-exclusions.json` for the current connection. The old log is preserved and those exclusions are labeled legacy evidence, not verified attempts. Changing accounts or server URLs never imports the old log again into another library.
 
@@ -216,7 +229,7 @@ Dedupe distinguishes verified completed, simulated, failed, needs-verification, 
 
 `GET /execution/runs/latest` and `GET /execution/runs/:runId` return compact journal views scoped to the normalized server URL and current account. They do not create migration markers, write evidence, or mutate Immich. Phases are running, finished, or interrupted (no recorded completion and no active coordinator). Details of checkpoints remain in recovery detail. No full-history listing is added.
 
-Legacy API runs use journal version 2; configurable reviewed runs use version 4, retaining immutable rules, plan evidence, selection order and the authorizing dry-run ID, plus request context and terminal report. Historical versions 1–3 remain readable with their original semantics. **Older application releases cannot read version 4 files: do not downgrade against the same journal directory.** Preserve all evidence when upgrading or troubleshooting.
+Legacy API runs use journal version 2; configurable reviewed runs use version 5, retaining immutable rules, plan evidence, selection order and the authorizing dry-run ID, plus request context and terminal report. Historical versions 1–4 remain readable with their original semantics. **Older application releases cannot read version 5 files: do not downgrade against the same journal directory.** Preserve all evidence when upgrading or troubleshooting.
 
 Browser checks use Chromium and fake API responses only:
 

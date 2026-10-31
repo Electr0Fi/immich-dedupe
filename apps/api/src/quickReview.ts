@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { QuickReview, QuickReviewCandidate, QuickReviewExclusion, ReviewedCandidate, RuleSet } from '@immich-dedupe/shared';
+import type { QuickReview, QuickReviewCandidate, QuickReviewExclusion, ReviewedCandidate, RuleSet, ConfiguredDecision } from '@immich-dedupe/shared';
 import { evaluateDuplicateGroup, evaluateConfiguredGroup } from '@immich-dedupe/rule-engine';
 import { normalizeDuplicates } from './normalizeDuplicates';
 import { PLAN_CAPACITY, PLAN_TTL_MS, projectAsset, reviewedAssetSchema } from './reviewedPlan';
@@ -51,7 +51,8 @@ export function evaluateQuickGroup(raw: z.infer<typeof quickGroupListSchema>[num
   }
   if (missing.size) return exclude(`Not verified in Quick Review: missing or invalid ${[...missing].join(', ')} in the duplicate response. Extra metadata reads were skipped.`, 'unverified');
   const decision = ruleset ? evaluateConfiguredGroup(group, ruleset) : evaluateDuplicateGroup(group);
-  if (decision.status !== 'auto-resolve' || decision.confidence !== 100 || !decision.keepAssetId || decision.trashAssetIds.length !== 1) return exclude(decision.reasons.join('; '), 'outcome' in decision && decision.outcome === 'deferred' ? 'unverified' : 'ineligible');
+  const configured = ruleset ? decision as ConfiguredDecision : null;
+  if (decision.status !== 'auto-resolve' || decision.confidence !== 100 || !decision.keepAssetId || decision.trashAssetIds.length !== 1) return { ...exclude(decision.reasons.join('; '), 'outcome' in decision && decision.outcome === 'deferred' ? 'unverified' : 'ineligible'), ...(configured?.resolution ? { resolution: configured.resolution, ruleName: decision.matchedRuleName } : {}) };
   const keep = group.assets.find((asset) => asset.id === decision.keepAssetId)!;
   const trash = group.assets.find((asset) => asset.id === decision.trashAssetIds[0])!;
   return { groupId: group.groupId, keepAsset: quickAssetSchema.parse(projectAsset(keep)), trashAsset: quickAssetSchema.parse(projectAsset(trash)), decision,

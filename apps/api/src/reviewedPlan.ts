@@ -49,7 +49,7 @@ const configuredDecisionSchema = z.object({
 export const configurableCandidateSchema = z.object({
   groupId: id, keepAsset: reviewedAssetSchema, trashAsset: reviewedAssetSchema,
   decision: configuredDecisionSchema, requiredAlbumIds: ids, proposedAlbumIds: ids, skippedAlbumIds: ids,
-  ruleset: configuredRuleSetSchema, ruleAssets: z.array(ruleAssetSchema).length(2),
+  ruleset: configuredRuleSetSchema.refine((ruleset) => ruleset.engineVersion === "1"), ruleAssets: z.array(ruleAssetSchema).length(2),
 }).strict().superRefine((candidate, context) => {
   try {
     const group = candidateToGroup(candidate);
@@ -58,7 +58,24 @@ export const configurableCandidateSchema = z.object({
     if (!isDeepStrictEqual(candidate, expected)) throw new Error("Invalid configured candidate");
   } catch { context.addIssue({ code: "custom", message: "Inconsistent configured rule evidence, selection or album actions" }); }
 });
-export const currentCandidateSchema = z.union([configurableCandidateSchema, reviewedCandidateSchema]);
+export const resolutionAssessmentSchema = z.object({
+  status: z.enum(["matched", "no-match", "ambiguous", "unverified"]),
+  assets: z.array(z.object({ id, fileName: z.string(), path: z.string().nullable(), fileSize: z.number().nullable(), width: z.number().nullable(), height: z.number().nullable(),
+    matches: z.boolean().nullable(), requirements: z.array(z.object({ description: z.string(), matches: z.boolean().nullable() }).strict()),
+  }).strict()).length(2),
+}).strict();
+export const resolutionCandidateSchema = z.object({
+  ...configurableCandidateSchema.shape,
+  decision: configuredDecisionSchema.extend({ engineVersion: z.literal("2"), resolution: resolutionAssessmentSchema.refine((assessment) => assessment.status === "matched") }),
+  ruleset: configuredRuleSetSchema.refine((ruleset) => ruleset.engineVersion === "2" && ruleset.schemaVersion === 2),
+}).strict().superRefine((candidate, context) => {
+  try {
+    const group = candidateToGroup(candidate);
+    const expected = candidateFromGroup(group, evaluateConfiguredGroup(group, candidate.ruleset), candidate.ruleset);
+    if (!isDeepStrictEqual(candidate, expected)) throw new Error("Invalid resolution evidence");
+  } catch { context.addIssue({ code: "custom", message: "Inconsistent resolution requirements, evidence, selection or album actions" }); }
+});
+export const currentCandidateSchema = z.union([resolutionCandidateSchema, configurableCandidateSchema, reviewedCandidateSchema]);
 
 export function candidateToGroup(candidate: Pick<ReviewedCandidate, "groupId" | "keepAsset" | "trashAsset"> & { ruleAssets?: AssetRecord[] }): DuplicateGroup {
   if (candidate.ruleAssets) return { groupId: candidate.groupId, assets: structuredClone(candidate.ruleAssets) };

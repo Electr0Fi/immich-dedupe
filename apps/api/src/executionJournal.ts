@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { reviewedCandidateSchema, configurableCandidateSchema, candidateFromGroup, changedCandidate } from "./reviewedPlan";
+import { reviewedCandidateSchema, configurableCandidateSchema, resolutionCandidateSchema, candidateFromGroup, changedCandidate } from "./reviewedPlan";
 import type { AssetRecord, ReviewedCandidate, ReviewedRunEvidence } from "@immich-dedupe/shared";
 import path from "node:path";
 import { z } from "zod";
@@ -60,12 +60,14 @@ const reviewSchema = z.object({
   candidates: z.array(reviewedCandidateSchema).nonempty(), authorizingDryRunId: uuid.nullable(),
 }).strict();
 const configuredReviewSchema = reviewSchema.extend({ candidates: z.array(configurableCandidateSchema).nonempty() });
+const resolutionReviewSchema = reviewSchema.extend({ candidates: z.array(resolutionCandidateSchema).nonempty() });
 const runFields = { runId: uuid, scope: scopeSchema, startedAt: timestamp, finishedAt: timestamp.nullable(), attempts: z.array(attemptSchema) };
 const runSchema = z.discriminatedUnion("version", [
   z.object({ ...runFields, version: z.literal(1) }),
   z.object({ ...runFields, version: z.literal(2), context: contextSchema, report: reportSchema.nullable() }),
   z.object({ ...runFields, version: z.literal(3), context: contextSchema, report: reportSchema.nullable(), review: reviewSchema }),
   z.object({ ...runFields, version: z.literal(4), context: contextSchema, report: reportSchema.nullable(), review: configuredReviewSchema }),
+  z.object({ ...runFields, version: z.literal(5), context: contextSchema, report: reportSchema.nullable(), review: resolutionReviewSchema }),
 ]);
 const legacySchema = z.object({ version: z.literal(1), scope: scopeSchema, importedAt: timestamp, groupIds: ids });
 type WithAttempts<T> = T extends { review: unknown } ? Omit<T, "attempts" | "review"> & { attempts: RecoveryAttempt[]; review: ReviewedRunEvidence } : T extends unknown ? Omit<T, "attempts"> & { attempts: RecoveryAttempt[] } : never;
@@ -93,9 +95,9 @@ function validateRun(value: unknown): JournalRun {
         (run.attempts.some((a) => a.result?.outcome === "failed" || a.result?.outcome === "needs-verification") && !run.report.stoppedEarly) ||
         (run.report.requestError && !run.report.stoppedEarly))) throw new Error("Inconsistent terminal report");
   }
-  if (run.version === 3 || run.version === 4) {
+  if (run.version === 3 || run.version === 4 || run.version === 5) {
     const review = run.review;
-    if (run.version === 4) {
+    if (run.version === 4 || run.version === 5) {
       const configured = run.review;
       if (configured.candidates.some((candidate) => candidate.ruleset.revision !== configured.candidates[0].ruleset.revision)) throw new Error("Mixed ruleset revisions");
     }
@@ -167,9 +169,9 @@ function validateRun(value: unknown): JournalRun {
 }
 
 function validateAuthorization(run: JournalRun, records: Map<string, JournalRun>) {
-  if ((run.version !== 3 && run.version !== 4) || run.context.dryRun) return;
+  if ((run.version !== 3 && run.version !== 4 && run.version !== 5) || run.context.dryRun) return;
   const authorization = records.get(run.review.authorizingDryRunId!);
-  if (!authorization || (authorization.version !== 3 && authorization.version !== 4) || authorization.version !== run.version || !sameScope(run.scope, authorization.scope) || !authorization.context.dryRun ||
+  if (!authorization || (authorization.version !== 3 && authorization.version !== 4 && authorization.version !== 5) || authorization.version !== run.version || !sameScope(run.scope, authorization.scope) || !authorization.context.dryRun ||
       !authorization.finishedAt || authorization.context.scanLimit !== run.context.scanLimit || authorization.context.executeLimit !== run.context.executeLimit || !authorization.report || authorization.report.stoppedEarly || authorization.report.requestError ||
       JSON.stringify(authorization.review) !== JSON.stringify({ ...run.review, authorizingDryRunId: null }) ||
       authorization.attempts.length !== run.review.selectedGroupIds.length || authorization.attempts.some((a) => a.result?.outcome !== "dry-run")) throw new Error("Missing successful reviewed dry-run evidence");
@@ -211,7 +213,7 @@ export function createExecutionJournal(directory: string, io: JournalFs = fs) {
       validateAuthorization(run, runs);
       const previous = runs.get(run.runId);
       if (previous) {
-        if (((previous.version === 3 || previous.version === 4) && (run.version === 3 || run.version === 4) && JSON.stringify(previous.review) !== JSON.stringify(run.review)) || previous.version !== run.version || (previous.version !== 1 && run.version !== 1 && (JSON.stringify(previous.context) !== JSON.stringify(run.context) || (previous.report !== null && JSON.stringify(previous.report) !== JSON.stringify(run.report)))) || !sameScope(previous.scope, run.scope) || previous.startedAt !== run.startedAt ||
+        if (((previous.version === 3 || previous.version === 4 || previous.version === 5) && (run.version === 3 || run.version === 4 || run.version === 5) && JSON.stringify(previous.review) !== JSON.stringify(run.review)) || previous.version !== run.version || (previous.version !== 1 && run.version !== 1 && (JSON.stringify(previous.context) !== JSON.stringify(run.context) || (previous.report !== null && JSON.stringify(previous.report) !== JSON.stringify(run.report)))) || !sameScope(previous.scope, run.scope) || previous.startedAt !== run.startedAt ||
             (previous.finishedAt !== null && (previous.finishedAt !== run.finishedAt || previous.attempts.length !== run.attempts.length)) || previous.attempts.length > run.attempts.length) throw new Error("Existing run evidence cannot be replaced");
         for (const [index, before] of previous.attempts.entries()) {
           const after = run.attempts[index];

@@ -17,13 +17,23 @@ export type ConfigurableRule = {
   id: string; name: string; enabled: boolean; action: "include" | "exclude";
   comparison: "checksum" | "metadata"; acknowledgeHeuristic: boolean;
   conditions: RuleCondition; keeperPreferences: KeeperPreference[];
+  resolution?: ResolutionCondition;
 };
-export type RuleSetDraft = { schemaVersion: 1; rules: ConfigurableRule[] };
-export type RuleSet = RuleSetDraft & { revision: string; engineVersion: "1" };
+export type ResolutionCondition = { all: ResolutionCondition[] } | { any: ResolutionCondition[] } |
+  { field: RuleField; operator: RuleOperator; value?: string | number | [number, number]; compareTo?: "other"; includeSubdirectories?: boolean } |
+  { preference: KeeperPreference; operator: "better" | "tied" };
+export type ResolutionAssessment = {
+  status: "matched" | "no-match" | "ambiguous" | "unverified";
+  assets: Array<{ id: string; fileName: string; path: string | null; fileSize: number | null; width: number | null; height: number | null;
+    matches: boolean | null; requirements: Array<{ description: string; matches: boolean | null }> }>;
+};
+export type RuleSetDraft = { schemaVersion: 1 | 2; rules: ConfigurableRule[] };
+export type RuleSet = RuleSetDraft & { revision: string; engineVersion: "1" | "2" };
 export type RuleMetadata = Record<string, string | number | null>;
 export type RuleAsset = AssetRecord & { ruleMetadata?: RuleMetadata };
 export type ConfiguredDecision = DuplicateDecision & {
-  rulesetRevision: string; engineVersion: "1";
+  rulesetRevision: string; engineVersion: "1" | "2";
+  resolution?: ResolutionAssessment;
   evidenceClass: "checksum" | "metadata" | "unverified";
   outcome: "eligible" | "excluded" | "deferred";
   requiredFields: string[]; missingFields: string[];
@@ -34,4 +44,4 @@ export type ConfiguredDecision = DuplicateDecision & {
 /** A named copy of an entire editor configuration; saving never publishes rules. */
 export type RulePreset = { id: string; name: string; ruleset: RuleSetDraft; revision: number };
 export type SaveRulePresetRequest = { name: string; ruleset: RuleSetDraft; overwriteId?: string; expectedRevision?: number };
-export type RulesState = { active: RuleSet; draft: RuleSetDraft; presets: ConfigurableRule[]; savedPresets: RulePreset[] };
+export type RulesState = { active: RuleSet; draft: RuleSetDraft; presets: ConfigurableRule[]; savedPresets: RulePreset[]; requiresResolutionUpgrade?: boolean };

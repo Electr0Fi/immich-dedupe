@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ExecutionScope, RuleSet, RuleSetDraft, RulesState, RulePreset, SaveRulePresetRequest } from "@immich-dedupe/shared";
-import { assertRuleSetDraft, createDefaultRuleSetDraft, createRuleSet, defaultRulePresets, validateRuleSet } from "@immich-dedupe/rule-engine";
+import { assertRuleSetDraft, createCurrentRuleSetDraft, createRuleSet, currentRulePresets, upgradeRuleSetDraft, validateRuleSet } from "@immich-dedupe/rule-engine";
 import { writeAtomicJson, type JournalFs } from "./atomicJson";
 
 export const ruleSetDraftSchema = z.unknown().transform((value, context): RuleSetDraft => {
@@ -23,9 +23,9 @@ export const saveRulePresetSchema = z.object({ name: presetName, ruleset: ruleSe
 }).strict().refine((request) => (request.overwriteId !== undefined) === (request.expectedRevision !== undefined), "Overwrite requires both preset ID and revision");
 export const deleteRulePresetSchema = z.object({ expectedRevision: revision }).strict();
 function initialPresets(): RulePreset[] {
-  return [{ id: "00000000-0000-4000-8000-000000000001", name: "Default rules", ruleset: createDefaultRuleSetDraft(), revision: 1 },
-    ...defaultRulePresets().map((rule, index) => ({ id: `00000000-0000-4000-8000-${String(index + 2).padStart(12, "0")}`,
-      name: rule.name, ruleset: { schemaVersion: 1 as const, rules: [rule] }, revision: 1 }))];
+  return [{ id: "00000000-0000-4000-8000-000000000001", name: "Default rules", ruleset: createCurrentRuleSetDraft(), revision: 1 },
+    ...currentRulePresets().map((rule, index) => ({ id: `00000000-0000-4000-8000-${String(index + 2).padStart(12, "0")}`,
+      name: rule.name, ruleset: { schemaVersion: 2 as const, rules: [rule] }, revision: 1 }))];
 }
 const presetListSchema = z.array(presetSchema).max(100).superRefine((presets, context) => {
   if (new Set(presets.map((preset) => preset.id)).size !== presets.length || new Set(presets.map((preset) => presetKey(preset.name))).size !== presets.length) context.addIssue({ code: "custom", message: "Preset IDs and names must be unique" });
@@ -66,14 +66,14 @@ export function createRulesStore(options: { filePath?: string; io?: JournalFs; n
     const key = scopeKey(scope);
     let found = store.scopes.find((candidate) => scopeKey(candidate.scope) === key);
     if (!found) {
-      const draft = createDefaultRuleSetDraft(); const active = createRuleSet(draft);
+      const draft = createCurrentRuleSetDraft(); const active = createRuleSet(draft);
       found = { scope: normalizeScope(scope), activeRevision: active.revision, draft, revisions: [active], savedPresets: initialPresets() };
       store.scopes.push(found);
     }
     return found;
   }
   function view(value: ReturnType<typeof entry>): RulesState {
-    return structuredClone({ active: value.revisions.find((r) => r.revision === value.activeRevision)!, draft: value.draft, presets: defaultRulePresets(), savedPresets: value.savedPresets });
+    return structuredClone({ active: value.revisions.find((r) => r.revision === value.activeRevision)!, draft: value.draft, presets: currentRulePresets(), savedPresets: value.savedPresets, requiresResolutionUpgrade: value.revisions.find((r) => r.revision === value.activeRevision)!.schemaVersion !== 2 });
   }
   function commit(next: PersistedRules): void {
     storeSchema.parse(next);
@@ -82,9 +82,18 @@ export function createRulesStore(options: { filePath?: string; io?: JournalFs; n
     loaded = next;
   }
   return {
-    async get(scope: ExecutionScope): Promise<RulesState> { return view(entry(load(), scope)); },
+    async get(scope: ExecutionScope, upgrade = true): Promise<RulesState> {
+      const current = entry(load(), scope);
+      if (upgrade && (current.draft.schemaVersion === 1 || current.savedPresets.some((preset) => preset.ruleset.schemaVersion === 1))) {
+        const next = structuredClone(load()), upgraded = entry(next, scope);
+        upgraded.draft = upgradeRuleSetDraft(upgraded.draft);
+        for (const preset of upgraded.savedPresets) if (preset.ruleset.schemaVersion === 1) { preset.ruleset = upgradeRuleSetDraft(preset.ruleset); preset.revision++; }
+        commit(next); return view(upgraded);
+      }
+      return view(current);
+    },
     async savePreset(scope: ExecutionScope, request: SaveRulePresetRequest): Promise<RulesState> {
-      const parsed = saveRulePresetSchema.parse(request);
+      const parsed = saveRulePresetSchema.parse(request); parsed.ruleset = upgradeRuleSetDraft(parsed.ruleset);
       const next = structuredClone(load()), current = entry(next, scope);
       const existing = current.savedPresets.find((preset) => presetKey(preset.name) === presetKey(parsed.name));
       if (parsed.overwriteId) {
@@ -106,14 +115,14 @@ export function createRulesStore(options: { filePath?: string; io?: JournalFs; n
       commit(next); return view(current);
     },
     async saveDraft(scope: ExecutionScope, draft: RuleSetDraft): Promise<RulesState> {
-      const parsed = ruleSetDraftSchema.parse(draft);
+      const parsed = upgradeRuleSetDraft(ruleSetDraftSchema.parse(draft));
       const next = structuredClone(load()); const current = entry(next, scope);
       current.draft = parsed; commit(next); return view(current);
     },
     async publish(scope: ExecutionScope, draft?: RuleSetDraft, expectedRevision?: string): Promise<RulesState> {
       const next = structuredClone(load()); const current = entry(next, scope);
       if (expectedRevision !== undefined && current.activeRevision !== expectedRevision) throw new RulesStoreError("Active rules changed; reload the rules before publishing", 409);
-      const parsed = ruleSetDraftSchema.parse(draft ?? current.draft); const revision = createRuleSet(parsed);
+      const parsed = upgradeRuleSetDraft(ruleSetDraftSchema.parse(draft ?? current.draft)); const revision = createRuleSet(parsed);
       if (!current.revisions.some((r) => r.revision === revision.revision)) current.revisions.push(revision);
       current.activeRevision = revision.revision; current.draft = parsed;
       commit(next); return view(current);

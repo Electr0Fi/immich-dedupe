@@ -25,10 +25,10 @@ function exactHarness(t: TestContext) {
   return { ...h, rules, scan, journal, log, service };
 }
 
-test('configured same-source pairs require fresh dry-run and journal v4 before verified fake resolution', async (t) => {
+test('configured same-source pairs require fresh dry-run and journal v5 before verified fake resolution', async (t) => {
   const h = exactHarness(t);
   const state = await h.rules.get(scope);
-  state.draft.rules[0].keeperPreferences = [{ field: 'directory', direction: 'lowest', directories: ['/external/originals', '/external/copies'] }];
+  state.draft.rules[0].resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };
   await h.rules.publish(scope, state.draft);
   const { plan } = await h.service.preparePlan({ scanLimit: 10, executeLimit: 1, scan: { mode: 'groups' } });
   assert.equal(plan.candidates.length, 1);
@@ -37,7 +37,7 @@ test('configured same-source pairs require fresh dry-run and journal v4 before v
   await assert.rejects(h.service.runReviewed(plan.planId, { selectedGroupIds: ['group'], dryRun: false }), /dry-run/);
   const dry = await h.service.runReviewed(plan.planId, { selectedGroupIds: ['group'] });
   assert.equal(dry.results[0]?.outcome, 'dry-run');
-  assert.equal(h.journal.run(scope, dry.runId)?.version, 4);
+  assert.equal(h.journal.run(scope, dry.runId)?.version, 5);
   assert.deepEqual(h.mutations, []);
   const live = await h.service.runReviewed(plan.planId, { selectedGroupIds: ['group'], dryRun: false });
   assert.equal(live.results[0]?.outcome, 'succeeded');
@@ -49,7 +49,7 @@ test('publishing rules invalidates full reviews, Quick upgrades and dry-run auth
   const h = exactHarness(t);
   // Original paths tie under seeded directories; choose an explicit keeper.
   const state = await h.rules.get(scope);
-  state.draft.rules[0].keeperPreferences = [{ field: 'directory', direction: 'lowest', directories: ['/external/originals'] }];
+  state.draft.rules[0].resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };
   await h.rules.publish(scope, state.draft);
   const full = await h.service.preparePlan({ scanLimit: 1, executeLimit: 1 });
   const quick = await h.service.prepareQuickReview({ scanLimit: 1, executeLimit: 1 });
@@ -116,7 +116,7 @@ test('cancelled continued scans flush completed classifications and leave unfini
 test('configured album conditions fetch album data in full review and remain deferred in Quick Review', async (t) => {
   const h = exactHarness(t); const state = await h.rules.get(scope);
   state.draft.rules[0].conditions = { field: 'albumId', operator: 'eq', value: 'missing', target: 'any' };
-  state.draft.rules[0].keeperPreferences = [{ field: 'directory', direction: 'lowest', directories: ['/external/originals'] }];
+  state.draft.rules[0].resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };
   await h.rules.publish(scope, state.draft);
   const quick = await h.service.prepareQuickReview({ scanLimit: 1, executeLimit: 1 });
   assert.equal(quick.quickReview!.candidates.length, 0);

@@ -1,4 +1,6 @@
 import type { ExecutionScope } from "./types";
+import type { ResolutionAssessment } from "./rules";
+export type ResolutionConflict = { groupId: string; ruleName: string | null; rulesetRevision: string; observedAt: string; assessment: ResolutionAssessment };
 
 export type ScanMode = "groups" | "candidates";
 /** scanLimit remains the inspection budget; executeLimit is always separate. */
@@ -31,6 +33,7 @@ export type ScanSummary = {
   updatedAt: string;
 };
 export type ScanSnapshot = {
+  conflicts?: ResolutionConflict[];
   scope: ExecutionScope;
   summary: ScanSummary;
   pending: PendingScanCandidate[];

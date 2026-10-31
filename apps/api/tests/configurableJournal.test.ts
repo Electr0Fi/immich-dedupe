@@ -4,7 +4,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
-import { evaluateDuplicateGroup, evaluateConfiguredGroup, createRuleSet } from '@immich-dedupe/rule-engine';
+import { evaluateDuplicateGroup, evaluateConfiguredGroup, createRuleSet, upgradeRuleSetDraft } from '@immich-dedupe/rule-engine';
 import type { ReviewedCandidate, RuleSetDraft } from '@immich-dedupe/shared';
 import { candidateFromGroup, candidateToGroup, configurableCandidateSchema, reviewedCandidateSchema, currentCandidateSchema, changedCandidate } from '../src/reviewedPlan';
 import { createExecutionJournal, type JournalRun } from '../src/executionJournal';
@@ -37,7 +37,7 @@ function setup(t: TestContext) {
   journal.migrate(scope, () => []);
   return { directory, journal };
 }
-function run(candidate: ReviewedCandidate, version: 3 | 4 = 4): JournalRun {
+function run(candidate: ReviewedCandidate, version: 3 | 4 | 5 = 4): JournalRun {
   const now = new Date().toISOString();
   return {
     version, runId: randomUUID(), scope, startedAt: now, finishedAt: null, attempts: [],
@@ -137,4 +137,23 @@ test('v4 live runs require a successful exact v4 dry-run including its pinned ru
   journal.save(live);
   const unauthorized = structuredClone(live); unauthorized.runId = randomUUID(); unauthorized.review.planId = randomUUID();
   assert.throws(() => journal.save(unauthorized));
+});
+
+
+test('v5 resolution evidence coexists with historical v4 and rejects changed assessments', (t) => {
+  const { directory, journal } = setup(t);
+  const original = configured(), assets = candidateToGroup(original);
+  const ruleset = createRuleSet(upgradeRuleSetDraft(draft));
+  const candidate = candidateFromGroup(assets, evaluateConfiguredGroup(assets,ruleset),ruleset);
+  const previous = run(original), current = run(candidate,5);
+  journal.save(previous); journal.save(current);
+  const historicalBytes = fs.readFileSync(path.join(directory,`${previous.runId}.json`),'utf8');
+  assert.deepEqual(createExecutionJournal(directory).runs(scope).map((record) => record.version).sort(),[4,5]);
+  assert.equal(fs.readFileSync(path.join(directory,`${previous.runId}.json`),'utf8'),historicalBytes);
+  if (current.version !== 5) assert.fail('Expected v5');
+  const altered = structuredClone(current);
+  const decision = altered.review.candidates[0].decision as import('@immich-dedupe/shared').ConfiguredDecision;
+  decision.resolution!.assets[0].requirements[0].matches = !decision.resolution!.assets[0].requirements[0].matches;
+  assert.equal(currentCandidateSchema.safeParse(altered.review.candidates[0]).success,false);
+  assert.throws(() => journal.save(altered));
 });
