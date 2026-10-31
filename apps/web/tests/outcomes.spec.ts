@@ -968,6 +968,10 @@ test('Rules presets immediately replace every rule and its settings in the edito
   await page.getByLabel('Preset', { exact: true }).selectOption(state.savedPresets[1].id);
   await expect(page.locator('.rule-editor')).toHaveCount(2);
   const first = page.locator('.rule-editor').first(), second = page.locator('.rule-editor').nth(1);
+  await expect(first.getByRole('region', { name: '1. Select candidate groups', exact: true })).toBeVisible();
+  await expect(first.getByRole('region', { name: '2. Define group resolution', exact: true })).toBeVisible();
+  await expect(second.getByRole('region', { name: '2. Define group resolution', exact: true })).toContainText('Excluded groups are not resolved');
+  await expect(second.getByRole('group', { name: 'Choose which asset to keep', exact: true })).toHaveCount(0);
   await expect(first.getByLabel('Name', { exact: true })).toHaveValue('Resolution variant');
   await expect(first.getByRole('switch')).not.toBeChecked();
   await expect(first.getByLabel('Comparison evidence', { exact: true })).toHaveValue('metadata');
@@ -977,11 +981,61 @@ test('Rules presets immediately replace every rule and its settings in the edito
   await expect(first.getByLabel('Preference 1')).toHaveValue('pixelCount');
   await expect(first.getByLabel('Prefer', { exact: true })).toHaveValue('highest');
   await expect(second.getByLabel('Name', { exact: true })).toHaveValue('Exclude rule');
-  await expect(second.getByLabel('Action', { exact: true })).toHaveValue('exclude');
+  await expect(second.getByLabel('Candidate decision', { exact: true })).toHaveValue('exclude');
   await page.getByLabel('Preset', { exact: true }).selectOption(state.savedPresets[0].id);
   await expect(page.locator('.rule-editor')).toHaveCount(1);
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Identical files');
   await expect(page.getByLabel('Directories, preferred first (one per line)')).toHaveValue('/photos/originals\n/photos/copies');
+});
+
+test('Rules separates candidate selection from resolution and retains preferences when excluding a group', async ({ page }) => {
+  await fakeApi(page); const state = configurableRulesFixture();
+  await page.route('**/rules', (route) => route.fulfill({ json: state }));
+  let saved = false;
+  await page.route('**/rules/draft', (route) => {
+    const { ruleset } = route.request().postDataJSON();
+    expect(ruleset.rules[0].action).toBe('exclude');
+    expect(ruleset.rules[0].conditions).toEqual(state.draft.rules[0].conditions);
+    expect(ruleset.rules[0].keeperPreferences).toEqual([
+      { field: 'directory', direction: 'lowest', directories: ['/preferred', '/copies'] },
+      { field: 'fileSize', direction: 'highest' },
+    ]);
+    saved = true;
+    return route.fulfill({ json: { ...state, draft: ruleset } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Rules', exact: true }).click();
+  const workflow = page.getByRole('region', { name: 'From candidate selection to resolution', exact: true });
+  await expect(workflow).toContainText('Immich supplies the duplicate groups');
+  await expect(workflow).toContainText('Select groups → Review proposed resolution → Dry-run → Execute');
+  await expect(workflow).toContainText('Including a group does not execute changes');
+  const selection = page.getByRole('region', { name: '1. Select candidate groups', exact: true });
+  const resolution = page.getByRole('region', { name: '2. Define group resolution', exact: true });
+  await expect(selection.getByLabel('Candidate decision', { exact: true })).toHaveValue('include');
+  await expect(selection.getByLabel('Comparison evidence', { exact: true })).toBeVisible();
+  await expect(selection).toContainText('use the keeper preferences in Stage 2');
+  await expect(resolution.getByRole('group', { name: 'Choose which asset to keep', exact: true })).toBeVisible();
+  await expect(resolution.getByText('Always applied', { exact: true })).toBeVisible();
+  const steps = resolution.locator('.rule-resolution-safeguards li');
+  await expect(steps).toHaveCount(4);
+  await expect(steps.nth(0)).toContainText('Add the keeper');
+  await expect(steps.nth(1)).toContainText('Verify the keeper');
+  await expect(steps.nth(2)).toContainText('Resolve the duplicate');
+  await expect(steps.nth(3)).toContainText('Verify the other asset');
+  await expect(resolution.getByRole('checkbox')).toHaveCount(0);
+  await resolution.getByLabel('Directories, preferred first (one per line)').fill('/preferred\n/copies');
+  await resolution.getByRole('button', { name: 'Add keeper preference', exact: true }).click();
+  await resolution.getByLabel('Preference 2').selectOption('fileSize');
+  await resolution.getByLabel('Prefer', { exact: true }).selectOption('highest');
+  await selection.getByLabel('Candidate decision', { exact: true }).selectOption('exclude');
+  await expect(resolution).toContainText('Excluded groups are not resolved');
+  await expect(resolution.getByRole('group', { name: 'Choose which asset to keep', exact: true })).toHaveCount(0);
+  await expect(resolution.getByText('Always applied', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Draft saved'); expect(saved).toBe(true);
+  await selection.getByLabel('Candidate decision', { exact: true }).selectOption('include');
+  await expect(resolution.getByLabel('Directories, preferred first (one per line)')).toHaveValue('/preferred\n/copies');
+  await expect(resolution.getByLabel('Preference 2')).toHaveValue('fileSize');
+  await expect(resolution.getByLabel('Prefer', { exact: true })).toHaveValue('highest');
 });
 
 test('Rules saving confirms new and existing names, preserves edits and restores saved contents after reload', async ({ page }) => {

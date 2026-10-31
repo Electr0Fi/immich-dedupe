@@ -36,8 +36,8 @@ function ConditionEditor({ value, onChange, disabled, depth = 0 }: { value: Rule
 }
 function KeeperEditor({ preferences, onChange, disabled }: { preferences: KeeperPreference[]; onChange: (next: KeeperPreference[]) => void; disabled: boolean }) {
   function update(index: number, next: KeeperPreference) { onChange(preferences.map((entry, position) => position === index ? next : entry)); }
-  return <fieldset disabled={disabled} className="keeper-preferences"><legend>Keeper preferences, in priority order</legend>
-    <p>Choose the copy in directory A before directory B. Directory matching respects path boundaries. If every preference ties, the group is excluded.</p>
+  return <fieldset disabled={disabled} className="keeper-preferences"><legend>Choose which asset to keep</legend>
+    <p>Preferences are applied in priority order. Choose the copy in directory A before directory B. Directory matching respects path boundaries. Tied or missing keeper preferences can prevent inclusion.</p>
     {preferences.map((preference, index) => <div className="rule-condition" key={index}>
       <div className="controls"><label>Preference {index + 1}<select value={preference.field} onChange={(event) => update(index, { field: event.target.value as KeeperPreference['field'], direction: preference.direction, ...(event.target.value === 'directory' ? { directories: [] } : {}) })}>
         <option value="directory">Directory order</option><option value="fileSize">File size</option><option value="pixelCount">Resolution (pixel count)</option><option value="takenAt">Capture date</option><option value="fileModifiedAt">Modified date</option>
@@ -144,6 +144,12 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
     finally { setWorking(false); }
   }
   return <div><header className="screen-header"><h1>Rules</h1><p>Configure comparisons and choose which directory’s copy to keep.</p></header>
+    <section className="card rules-workflow" aria-labelledby="rules-workflow-title">
+      <h2 id="rules-workflow-title">From candidate selection to resolution</h2>
+      <p className="rules-workflow-path">Select groups → Review proposed resolution → Dry-run → Execute</p>
+      <p>Immich supplies the duplicate groups. Stage 1 decides which groups qualify for review; Stage 2 defines how included groups would be resolved.</p>
+      <p>Including a group does not execute changes. Saving presets, saving drafts and publishing rules do not resolve duplicates. Review the proposed resolution on Dedupe, complete a successful dry-run, then explicitly execute the selection.</p>
+    </section>
     <section className="card"><h2>Active rules and draft</h2>
       <p>Only two unlinked images are supported. Favorites, archived, offline, edited and trashed assets remain protected. Missing safety information prevents inclusion. AI similarity alone never qualifies.</p>
       {state && <p className="run-identifier">Active revision: {state.active.revision}</p>}
@@ -165,12 +171,33 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
           <div className="rule-heading"><h3>Rule {index + 1}</h3>
             <label className="rule-enabled"><span>Enabled</span><input className="rule-switch" type="checkbox" role="switch" disabled={busy} checked={rule.enabled} onChange={(event) => update(index, { ...rule, enabled: event.target.checked })} /></label>
           </div>
-          <div className="controls rule-main-controls"><label className="rule-name">Name<input disabled={busy} value={rule.name} onChange={(event) => update(index, { ...rule, name: event.target.value })} /></label>
-            <label>Action<select aria-label="Action" disabled={busy} value={rule.action} onChange={(event) => update(index, { ...rule, action: event.target.value as ConfigurableRule['action'] })}><option value="include">Include group</option><option value="exclude">Exclude group</option></select></label>
+          <div className="controls rule-main-controls"><label className="rule-name">Name<input disabled={busy} value={rule.name} onChange={(event) => update(index, { ...rule, name: event.target.value })} /></label></div>
+          <section className="rule-stage" aria-labelledby={`rule-selection-${index}`}>
+            <h4 id={`rule-selection-${index}`}>1. Select candidate groups</h4>
+            <p>Determine whether an Immich duplicate group qualifies for review using comparisons and conditions.</p>
+            <div className="controls rule-main-controls"><label>Candidate decision<select aria-label="Candidate decision" disabled={busy} value={rule.action} onChange={(event) => update(index, { ...rule, action: event.target.value as ConfigurableRule['action'] })}><option value="include">Include group</option><option value="exclude">Exclude group</option></select></label>
             <label>Comparison evidence<select aria-label="Comparison evidence" disabled={busy} value={rule.comparison} onChange={(event) => update(index, { ...rule, comparison: event.target.value as ConfigurableRule['comparison'], acknowledgeHeuristic: false })}><option value="checksum">Checksum match</option><option value="metadata">Metadata match (heuristic)</option></select></label></div>
-          {rule.comparison === 'metadata' && <label className="toggle-row"><input type="checkbox" disabled={busy} checked={rule.acknowledgeHeuristic} onChange={(event) => update(index, { ...rule, acknowledgeHeuristic: event.target.checked })} /><span>I accept that metadata matching can include genuinely different images, even when filenames match. This does not prove identical content.</span></label>}
-          <ConditionEditor value={rule.conditions} onChange={(conditions) => update(index, { ...rule, conditions })} disabled={busy} />
-          <KeeperEditor preferences={rule.keeperPreferences} onChange={(keeperPreferences) => update(index, { ...rule, keeperPreferences })} disabled={busy} />
+            {rule.comparison === 'metadata' && <label className="toggle-row"><input type="checkbox" disabled={busy} checked={rule.acknowledgeHeuristic} onChange={(event) => update(index, { ...rule, acknowledgeHeuristic: event.target.checked })} /><span>I accept that metadata matching can include genuinely different images, even when filenames match. This does not prove identical content.</span></label>}
+            <p className="field-hint">Conditions referring to the proposed keeper or loser use the keeper preferences in Stage 2.</p>
+            <ConditionEditor value={rule.conditions} onChange={(conditions) => update(index, { ...rule, conditions })} disabled={busy} />
+          </section>
+          <section className="rule-stage" aria-labelledby={`rule-resolution-${index}`}>
+            <h4 id={`rule-resolution-${index}`}>2. Define group resolution</h4>
+            {rule.action === 'exclude' ? <p>Excluded groups are not resolved. Any stored keeper preferences are retained, including for conditions that reference the proposed keeper or loser, and are shown again when you switch to Include group.</p> : <>
+              <p>For included groups, these preferences define the proposed keeper. The other asset will be trashed during execution. Missing required keeper information defers the group; tied preferences exclude it.</p>
+              <KeeperEditor preferences={rule.keeperPreferences} onChange={(keeperPreferences) => update(index, { ...rule, keeperPreferences })} disabled={busy} />
+              <div className="rule-resolution-safeguards">
+                <h5>Album preservation <span className="rule-policy-badge">Always applied</span></h5>
+                <ol>
+                  <li>Add the keeper to any visible albums containing the other asset where the keeper is missing.</li>
+                  <li>Verify the keeper belongs to every required album before proceeding.</li>
+                  <li>Resolve the duplicate in Immich, keeping the chosen asset and trashing the other.</li>
+                  <li>Verify the other asset is trashed and removed from the duplicate group, and the keeper remains untrashed.</li>
+                </ol>
+                <p className="field-hint">These safeguards are mandatory. Execution takes place on Dedupe after review, a successful dry-run and explicit execution.</p>
+              </div>
+            </>}
+          </section>
           <div className="buttonRow"><button disabled={busy || index === 0} onClick={() => { const next = [...draft.rules]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; edit(next); }}>Move rule up</button><button disabled={busy || index === draft.rules.length - 1} onClick={() => { const next = [...draft.rules]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; edit(next); }}>Move rule down</button><button disabled={busy} onClick={() => clone(rule)}>Clone rule</button><button disabled={busy} onClick={() => edit(draft.rules.filter((_, position) => position !== index))}>Remove rule</button></div>
         </article>)}
       </>}
