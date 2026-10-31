@@ -88,6 +88,33 @@ async function openDedupe(page: Page) {
   await expect(page.getByRole('button', { name: 'Dry-run selected', exact: true })).toBeEnabled();
 }
 function summary(page: Page) { return page.getByRole('region', { name: 'Latest run results' }); }
+async function openExecutionDetails(page: Page) {
+  const details = page.locator('.execution-result-details');
+  await expect(details).toHaveCount(1);
+  if (!await details.evaluate((element) => (element as HTMLDetailsElement).open)) await details.locator(':scope > summary').click();
+}
+
+test('execution group results start collapsed under View Details and support keyboard disclosure', async ({ page }) => {
+  const state = await fakeApi(page, runView('succeeded')); await openDedupe(page);
+  const section = summary(page), details = section.locator('.execution-result-details');
+  await expect(section.getByText('Execution completed successfully: 1 group resolved and verified.')).toBeVisible();
+  await expect(section.getByText('Verified completed · Group photos', { exact: true })).not.toBeVisible();
+  const toggle = details.locator(':scope > summary');
+  await expect(toggle).toHaveText('View Details');
+  const before = state.calls.filter((call) => call.startsWith('POST'));
+  await toggle.focus(); await page.keyboard.press('Enter');
+  await expect(section.getByText('Verified completed · Group photos', { exact: true })).toBeVisible();
+  await toggle.focus(); await page.keyboard.press('Enter');
+  await expect(section.getByText('Verified completed · Group photos', { exact: true })).not.toBeVisible();
+  expect(state.calls.filter((call) => call.startsWith('POST'))).toEqual(before);
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await toggle.click();
+  state.latest = { ...runView('dry-run'), runId: attemptId };
+  await section.getByRole('button', { name: 'Refresh latest', exact: true }).click();
+  await expect(section.getByText('Simulated · Group photos', { exact: true })).not.toBeVisible();
+  await expect(section.getByText('Dry-run completed: 1 group simulated. No Immich assets were changed.')).toBeVisible();
+});
+
 
 test('only verified requested live keeper/loser results qualify for removal', () => {
   const plan = reviewPlan() as ReviewedPlan;
@@ -352,6 +379,7 @@ test('summary counts, exclusions and keyboard details explain outcomes; restorat
   await page.keyboard.press('Escape');
   await expect(page.getByRole('tooltip')).toHaveCount(0);
   await expect(summary(page).locator('dl.stats > div').filter({ hasText: 'Verified completed' }).locator('dd')).toHaveText('1');
+  await openExecutionDetails(page);
   const details = page.getByText('Technical details for group photos', { exact: true });
   await details.focus(); await page.keyboard.press('Enter');
   await expect(page.getByText('family', { exact: true }).last()).toBeVisible();
@@ -438,6 +466,7 @@ for (const status of [409, 503]) {
     await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
     await expect(page.getByRole('alert').filter({ hasText: `HTTP ${status}` })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Previous recorded run' })).toBeVisible();
+    await openExecutionDetails(page);
     await expect(page.getByText('Verified completed · Group photos')).toBeVisible();
   });
 }
@@ -447,6 +476,7 @@ test('partial results survive a 503 and show confirmed album additions', async (
   const partial = { ...executionResponse(runView('needs-verification')), ok: false };
   await page.route('**/execution/plans/*/run', (route) => route.fulfill({ status: 503, json: { code: 'journal_unavailable', runId, error: 'Recovery evidence could not be persisted', partialExecution: partial } }));
   await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await openExecutionDetails(page);
   await expect(page.getByText('Needs verification · Group photos')).toBeVisible();
   await page.getByText('Technical details for group photos', { exact: true }).click();
   await expect(page.getByText('family', { exact: true }).last()).toBeVisible();
@@ -470,6 +500,7 @@ test('lost live response reports unknown and never retries automatically', async
 
 test('recovery links load an attempt outside the page and release requires confirmation', async ({ page }) => {
   await fakeApi(page, runView('needs-verification')); await openDedupe(page);
+  await openExecutionDetails(page);
   await page.getByRole('button', { name: 'Review recovery' }).last().click();
   await expect(page.getByRole('heading', { name: 'Logs', exact: true })).toBeVisible();
   await expect(page.getByText(`Evidence for ${attemptId}`)).toBeVisible();
@@ -531,9 +562,11 @@ test('refreshing the latest journal cannot erase unsaved partial results', async
   await expect(page.getByRole('heading', { name: 'Partial results returned by the API' })).toBeVisible();
   state.latest = null;
   await page.getByRole('button', { name: 'Refresh latest', exact: true }).click();
+  await openExecutionDetails(page);
   await expect(page.getByText('Needs verification · Group photos')).toBeVisible();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await openExecutionDetails(page);
   await expect(page.getByText('Needs verification · Group photos')).toBeVisible();
   await page.reload(); await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
   await expect(page.getByText('No recorded run loaded.')).toBeVisible();
@@ -545,6 +578,7 @@ test('an account change clears partial evidence from the previous scope', async 
     code: 'journal_unavailable', error: 'Checkpoint failed', partialExecution: { ...executionResponse(runView('needs-verification')), ok: false },
   } }));
   await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await openExecutionDetails(page);
   await expect(page.getByText('Needs verification · Group photos')).toBeVisible();
   await page.route('**/execution/runs/latest', (route) => route.fulfill({ json: { ok: true, scope: { ...scope, accountId: 'other' }, run: null } }));
   await page.getByRole('button', { name: 'Refresh latest', exact: true }).click();
@@ -589,6 +623,7 @@ test('lost live-response warning survives refresh of an older run', async ({ pag
 
 test('failed preflight and an empty completed run never imply successful cleanup', async ({ page }) => {
   const state = await fakeApi(page, runView('failed')); await openDedupe(page);
+  await openExecutionDetails(page);
   await expect(page.getByText('Failed · Group photos')).toBeVisible();
   await expect(page.getByText('Stopped during: Fresh safety checks')).toBeVisible();
   await expect(page.getByRole('alert').filter({ hasText: 'Batch stopped: Preflight rejected the pair' })).toBeVisible();
@@ -608,6 +643,7 @@ test('active runs and closed recovery links offer current facts without repeatin
     assessments: [{ checkedAt: active.startedAt, classification: 'verified-resolved', message: 'Resolution verified.', evidence: [] }], releasedAt: null,
   };
   await page.route(`**/execution/recovery/${attemptId}`, (route) => route.fulfill({ json: { ok: true, attempt: detail } }));
+  await openExecutionDetails(page);
   await page.getByRole('button', { name: 'Review recovery' }).last().click();
   await expect(page.getByText('This attempt is verified resolved. Earlier evidence is preserved.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Recheck outcome', exact: true })).toHaveCount(0);

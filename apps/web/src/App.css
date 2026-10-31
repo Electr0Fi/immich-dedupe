@@ -659,6 +659,9 @@ input[type='checkbox'] {
   box-shadow: 0 4px 12px rgba(22, 32, 51, 0.2);
 }
 .run-attempt { border-top: 1px solid #dde2ea; margin-top: 18px; padding-top: 12px; }
+.execution-result-details { border-top: 1px solid #dde2ea; margin-top: 18px; padding-top: 12px; }
+.execution-result-details > summary { cursor: pointer; font-weight: 600; }
+.execution-result-details > .run-attempt:first-of-type { border-top: 0; }
 .run-attempt h3 { font-size: 14px; }
 .result-details dd { font-size: 13px; font-weight: 400; overflow-wrap: anywhere; margin-bottom: 12px; }
 summary { cursor: pointer; line-height: 1.6; }

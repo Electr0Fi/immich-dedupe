@@ -83,7 +83,9 @@ export function ExecutionResults({ execution, onReviewRecovery }: { execution: E
         <ul>{excluded.map((g, i) => <li key={`${g.groupId}-${i}`}>Group {g.groupId}: {g.reason}{g.attemptIds.map((id) => <button key={id} onClick={() => onReviewRecovery(id)}>Review recovery</button>)}</li>)}</ul>
       </details>}
       {run.attempts.length === 0 && <p>No groups were attempted in this run.</p>}
-      {run.attempts.map((attempt) => <article className="run-attempt" key={attempt.attemptId}>
+      {run.attempts.length > 0 && <details className="execution-result-details" key={run.runId}>
+        <summary>View Details</summary>
+        {run.attempts.map((attempt) => <article className="run-attempt" key={attempt.attemptId}>
         <h3>{attempt.result ? outcomeLabels[attempt.result.outcome] : 'Awaiting recorded result'} · Group {attempt.groupId}</h3>
         <p>{attempt.result?.message ?? 'No terminal outcome was recorded.'}</p>
         {attempt.result?.failureStage && <p>Stopped during: {stageLabels[attempt.result.failureStage]}</p>}
@@ -100,7 +102,8 @@ export function ExecutionResults({ execution, onReviewRecovery }: { execution: E
             <dt>Confirmed state observations</dt><dd>{attempt.confirmedEffects.loserUnlinked ? 'Duplicate association cleared' : 'Duplicate clearance not confirmed'}; {attempt.confirmedEffects.loserTrashed ? 'Trash confirmed' : 'Trash not confirmed'}; {attempt.confirmedEffects.keeperUntrashed ? 'Keeper untrashed confirmed' : 'Keeper state not confirmed'}</dd>
           </dl>
         </details>
-      </article>)}
+        </article>)}
+      </details>}
     </>}
   </section>;
 }
