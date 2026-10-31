@@ -44,6 +44,8 @@ A local React/Express application for reviewing duplicate groups already identif
 
 ## Configurable rules
 
+In **Active rules and draft**, **Save draft** stores edits for later without changing active review rules. **Publish rules** saves and activates the editor contents for new reviews, clearing the current review and dry-run approval. Prepare a new review and dry-run before execution. Publishing does not require saving a draft first.
+
 Use **Rules** to edit a draft, enable or disable rules, change their order and define AND/OR keeper requirements. Conditions support filenames/stems/extensions, checksums, paths, MIME, sizes, dimensions, pixel count/aspect ratio, dates, selected EXIF fields and albums, with AND/OR groups. Operators are restricted to appropriate field types. Missing values stay unverified/deferred in both full and Quick Review; they cannot satisfy negative conditions or bypass mandatory protections. The first matching rule determines the outcome, and indeterminate earlier conditions defer the group.
 
 Each rule has two numbered sections: **1. Select candidate groups** contains the include/exclude decision, comparison evidence and conditions; **2. Define group resolution** chooses the keeper and explains mandatory album preservation, duplicate resolution and verification. Exclusion rules show that no resolution occurs and retain stored resolution requirements. Conditions referencing the proposed keeper or loser still use the resolution selection. Ties exclude a group and missing keeper information defers it. The workflow is **Select groups → Review proposed resolution → Dry-run → Execute**: saving or publishing rules never resolves duplicates.

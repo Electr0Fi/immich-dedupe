@@ -141,6 +141,8 @@ export function RulesScreen({ snapshotId, disabled, onPublish }: { snapshotId: s
       <p>Including a group does not execute changes. Saving presets, saving drafts and publishing rules do not resolve duplicates. Review the proposed resolution on Dedupe, complete a successful dry-run, then explicitly execute the selection.</p>
     </section>
     <section className="card"><h2>Active rules and draft</h2>
+      <p><strong>Save draft</strong> stores your current edits so you can return to them later. Active rules used for duplicate reviews stay unchanged.</p>
+      <p><strong>Publish rules</strong> saves and activates the rules currently shown in the editor for new reviews. Publishing clears the current review and its dry-run approval; prepare a new review and complete a new dry-run before execution. You can publish directly without saving a draft first.</p>
       <p>Only two unlinked images are supported. Favorites, archived, offline, edited and trashed assets remain protected. Missing safety information prevents inclusion. AI similarity alone never qualifies.</p>
       {state && <p className="run-identifier">Active revision: {state.active.revision}</p>}
       {state?.requiresResolutionUpgrade && <p className="resolution-notice">Your presets and draft were converted to equivalent AND/OR requirements. Review and publish the updated draft before preparing new reviews. Previously published rules and historical evidence were preserved.</p>}
