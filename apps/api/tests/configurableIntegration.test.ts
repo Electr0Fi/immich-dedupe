@@ -73,6 +73,40 @@ for (const comparison of ['checksum', 'metadata'] as const) test(`configured ${c
   assert.deepEqual(h.mutations, []);
 });
 
+for (const formatted of ['2026-01-01T00:00:00Z', '2026-01-01T02:00:00.000+02:00', '2025-12-31T19:00:00.000-0500']) test(`Quick Review accepts equivalent date formats: ${formatted}`, async (t) => {
+  const h = exactHarness(t); const state = await h.rules.get(scope);
+  const rule = state.draft.rules[0];
+  rule.conditions = { all: ['fileCreatedAt', 'fileModifiedAt', 'takenAt'].map((field) => ({ field: field as 'fileCreatedAt' | 'fileModifiedAt' | 'takenAt', operator: 'eq', value: '2026-01-01T00:00:00Z' })) };
+  rule.resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };
+  await h.rules.publish(scope, { schemaVersion: 2, rules: [rule] });
+  const quick = (await h.service.prepareQuickReview({ scanLimit: 5, executeLimit: 5 })).quickReview!;
+  assert.equal(quick.candidates.length, 1);
+  for (const asset of h.raw.assets) { asset.fileCreatedAt = formatted; asset.fileModifiedAt = formatted; asset.localDateTime = formatted; }
+  const { plan } = await h.service.prepareQuickSelection(quick.reviewId, { selectedGroupIds: ['group'], executeLimit: 5 });
+  assert.equal(plan.candidates.length, 1); assert.deepEqual(plan.candidates[0].proposedAlbumIds, ['missing']);
+  await assert.rejects(h.service.runReviewed(plan.planId, { selectedGroupIds: ['group'], dryRun: false }), /dry-run/);
+  assert.deepEqual(h.mutations, []);
+});
+
+for (const field of ['fileCreatedAt', 'fileModifiedAt', 'localDateTime'] as const) {
+  for (const value of ['2026-01-01T00:00:00.001Z', '2026-01-01T00:00:00+02:00', '2026-01-01T00:00:00', 'invalid', null]) {
+    test(`Quick Review rejects changed/lost/ambiguous ${field}: ${value}`, async (t) => {
+      const h = exactHarness(t); const state = await h.rules.get(scope);
+      state.draft.rules[0].resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };
+      await h.rules.publish(scope, state.draft);
+      const quick = (await h.service.prepareQuickReview({ scanLimit: 5, executeLimit: 5 })).quickReview!;
+      Reflect.set(h.raw.assets[0], field, value);
+      await assert.rejects(h.service.prepareQuickSelection(quick.reviewId, { selectedGroupIds: ['group'], executeLimit: 5 }), (error: unknown) => {
+        assert.ok(error instanceof Error && 'details' in error);
+        const normalizedField = field === 'localDateTime' ? 'takenAt' : field;
+        assert.deepEqual((error.details as { changedGroups: unknown }).changedGroups, [{ groupId: 'group', reasons: [`Keeper rule input "${normalizedField}" changed since Quick Review`] }]);
+        return true;
+      });
+      assert.deepEqual(h.mutations, []);
+    });
+  }
+}
+
 for (const freshValue of ['Changed model', null]) test(`configured Quick Review rejects changed or lost observed EXIF: ${freshValue}`, async (t) => {
   const h = exactHarness(t); const state = await h.rules.get(scope);
   state.draft.rules[0].resolution = { field: 'originalPath', operator: 'prefix', value: '/external/originals', includeSubdirectories: true };

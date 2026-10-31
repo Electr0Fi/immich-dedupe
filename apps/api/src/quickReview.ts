@@ -58,6 +58,18 @@ export function evaluateQuickGroup(raw: z.infer<typeof quickGroupListSchema>[num
   return { groupId: group.groupId, keepAsset: quickAssetSchema.parse(projectAsset(keep)), trashAsset: quickAssetSchema.parse(projectAsset(trash)), decision,
     ...(ruleset ? { ruleset, ruleAssets: [keep, trash] } : {}) };
 }
+const dateInputs = new Set(['fileCreatedAt', 'fileModifiedAt', 'takenAt']);
+function sameRuleInput(field: string, before: unknown, after: unknown): boolean {
+  if (dateInputs.has(field) && typeof before === 'string' && typeof after === 'string') {
+    // Match the rule engine's instant semantics, without assuming a timezone
+    // for local timestamps or accepting two invalid dates as equivalent.
+    const zoned = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+    const first = zoned.test(before) ? Date.parse(before) : NaN;
+    const second = zoned.test(after) ? Date.parse(after) : NaN;
+    if (Number.isFinite(first) && Number.isFinite(second)) return first === second;
+  }
+  return canonicalRulesJson(before) === canonicalRulesJson(after);
+}
 export function changedQuickCandidate(expected: QuickReviewCandidate, fresh: ReviewedCandidate): string[] {
   const actual = quickCandidate(fresh);
   const reasons: string[] = [];
@@ -80,7 +92,7 @@ export function changedQuickCandidate(expected: QuickReviewCandidate, fresh: Rev
       // New details may fill unknowns; fresh rule evaluation must still select
       // the same rule and keeper. Previously observed values may not change.
       for (const [field, value] of Object.entries(input)) {
-        if (value != null && canonicalRulesJson(value) !== canonicalRulesJson(freshInput[field as keyof typeof freshInput])) {
+        if (value != null && !sameRuleInput(field, value, freshInput[field as keyof typeof freshInput])) {
           reasons.push(`${side} rule input "${field}" changed since Quick Review`);
         }
       }
