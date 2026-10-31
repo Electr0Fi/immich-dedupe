@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { AssetResponseDto } from "@immich/sdk";
 import { evaluateDuplicateGroup, evaluateConfiguredGroup } from "@immich-dedupe/rule-engine";
-import type { DuplicateDecision, DuplicateGroup, ExecutionFailureStage, ExecutionResult, ExecutionCheckpoint, RuleSet } from "@immich-dedupe/shared";
+import type { DuplicateDecision, DuplicateGroup, ExecutionFailureStage, ExecutionResult, ExecutionCheckpoint, RuleSet, ExecutionRunStage } from "@immich-dedupe/shared";
 import type { ImmichClient } from "./immichClient";
 import { readFreshPreflight, albumDetailSchema, type FreshPreflight } from "./freshPreflight";
 export { assetSchema, albumDetailSchema, groupListSchema } from "./freshPreflight";
@@ -16,9 +16,10 @@ export class CheckpointFailure extends Error {
 
 export function createDecisionExecutor(
   client: Pick<ImmichClient, "addAssetsToAlbums" | "getAssetInfo" | "resolveDuplicates" | "getAssetDuplicates" | "getAllAlbums" | "getAlbumInfo">,
-  options: { ruleset?: RuleSet; delay?: (ms: number) => Promise<void>; onCheckpoint?: (event: ExecutionCheckpoint) => Promise<void>; validatePreflight?: (fresh: FreshPreflight) => void } = {}
+  options: { ruleset?: RuleSet; delay?: (ms: number) => Promise<void>; onCheckpoint?: (event: ExecutionCheckpoint) => Promise<void>; validatePreflight?: (fresh: FreshPreflight) => void; onStage?: (stage: ExecutionRunStage) => void } = {}
 ) {
   const delay = options.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const progress = (stage: ExecutionRunStage) => { try { options.onStage?.(stage); } catch { /* Progress cannot interrupt execution. */ } };
 
   return async function executeDuplicateDecision(
     group: DuplicateGroup, decision: DuplicateDecision, dryRun = true
@@ -49,7 +50,7 @@ export function createDecisionExecutor(
         throw new Error("Safety guard failed: invalid group or decision");
       }
 
-      const fresh = await readFreshPreflight(client, group.groupId, { keepId, trashId }, undefined, { ruleset: options.ruleset });
+      const fresh = await readFreshPreflight(client, group.groupId, { keepId, trashId }, options.onStage ? { checkCancelled() {}, stage: progress } : undefined, { ruleset: options.ruleset });
       options.validatePreflight?.(fresh);
       result.proposedAlbumIds = fresh.proposedAlbumIds;
       result.skippedAlbumIds = fresh.skippedAlbumIds;
@@ -57,6 +58,7 @@ export function createDecisionExecutor(
         requiredAlbumIds: fresh.requiredAlbumIds,
         proposedAlbumIds: result.proposedAlbumIds, skippedAlbumIds: result.skippedAlbumIds });
       if (dryRun) {
+        progress('simulating');
         result.outcome = "dry-run";
         result.message = "Dry run: no changes executed";
         return result;
@@ -65,6 +67,7 @@ export function createDecisionExecutor(
       if (result.proposedAlbumIds.length) {
         stage = "album-transfer";
         await checkpoint({ kind: "album-intent", albumIds: result.proposedAlbumIds });
+        progress('transferring-albums');
         mutationSubmitted = true;
         let response: Awaited<ReturnType<ImmichClient["addAssetsToAlbums"]>> | undefined;
         let transferError: unknown;
@@ -79,6 +82,7 @@ export function createDecisionExecutor(
           error: transferError ? "Album request failed or its response was lost" : response?.success === true ? null : "Album request did not explicitly succeed" });
         // Even a failed/ambiguous response can follow partial changes: retain positive membership evidence.
         stage = "album-verification";
+        progress('verifying-albums');
         const checks = await Promise.allSettled(result.proposedAlbumIds.map(async (id) => {
           const album = albumDetailSchema.parse(await client.getAlbumInfo({ id, withoutAssets: false }));
           return album.id === id && album.assets.some((asset) => asset.id === keepId);
@@ -100,6 +104,7 @@ export function createDecisionExecutor(
 
       // Verify overlapping memberships too; preservation must not rely only on the earlier list.
       stage = "album-verification";
+      progress('verifying-albums');
       for (const id of result.skippedAlbumIds) {
         const album = albumDetailSchema.parse(await client.getAlbumInfo({ id, withoutAssets: false }));
         if (album.id !== id || !album.assets.some((asset) => asset.id === keepId)) {
@@ -109,6 +114,7 @@ export function createDecisionExecutor(
 
       stage = "resolution";
       await checkpoint({ kind: "resolution-intent" });
+      progress('resolving-duplicates');
       mutationSubmitted = true;
       let response: Awaited<ReturnType<ImmichClient["resolveDuplicates"]>> | undefined;
       let resolutionError: unknown;
@@ -125,6 +131,7 @@ export function createDecisionExecutor(
       if (!accepted) throw new Error(resolutionError instanceof Error ? resolutionError.message : "Duplicate resolution did not explicitly succeed");
 
       stage = "verification";
+      progress('verifying-resolution');
       for (let round = 0; round < 3; round++) {
         if (round) await delay(1000);
         const [loser, keeper]: [PromiseSettledResult<AssetResponseDto>, PromiseSettledResult<AssetResponseDto>] = await Promise.allSettled([

@@ -88,6 +88,89 @@ async function openDedupe(page: Page) {
 }
 function summary(page: Page) { return page.getByRole('region', { name: 'Latest run results' }); }
 
+type RunProgressTestWindow = Window & { runProgressTest: { calls: number; push: (event: unknown) => void; finish: () => void } };
+async function installRunStream(page: Page) {
+  await page.evaluate(() => {
+    const original = window.fetch;
+    let controller: ReadableStreamDefaultController<Uint8Array>;
+    const encoder = new TextEncoder();
+    const harness = { calls: 0, push: (event: unknown) => controller.enqueue(encoder.encode(JSON.stringify(event) + '\n')), finish: () => controller.close() };
+    (window as unknown as RunProgressTestWindow).runProgressTest = harness;
+    window.fetch = async (input, init) => {
+      if (String(input).match(/\/execution\/plans\/[^/]+\/run$/) && init?.method === 'POST') {
+        harness.calls++;
+        return new Response(new ReadableStream<Uint8Array>({ start(value) { controller = value; } }), { headers: { 'Content-Type': 'application/x-ndjson' } });
+      }
+      return original(input, init);
+    };
+  });
+}
+async function pushRunStage(page: Page, dryRun: boolean, stage: string) {
+  await page.evaluate(({ dryRun, stage, runId }) => (window as unknown as RunProgressTestWindow).runProgressTest.push({ type: 'progress', progress: {
+    runId, dryRun, phase: 'running', stage, groupId: 'photos', groupIndex: 1, totalGroups: 1, completedGroups: 0,
+  } }), { dryRun, stage, runId });
+}
+async function finishRunStream(page: Page, event?: unknown) {
+  await page.evaluate((event) => {
+    const harness = (window as unknown as RunProgressTestWindow).runProgressTest;
+    if (event) harness.push(event);
+    harness.finish();
+  }, event);
+}
+
+test('dry-run and live execution show streamed stages, counts and elapsed time across navigation', async ({ page }) => {
+  await page.clock.install();
+  const state = await fakeApi(page, null); await openDedupe(page); await installRunStream(page);
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await expect(page.getByText('Dry run in progress… No Immich assets will be changed.', { exact: true })).toBeVisible();
+  await pushRunStage(page, true, 'checking-albums');
+  await expect(page.getByText('Checking album memberships and proposed transfers', { exact: true })).toBeVisible();
+  await expect(page.getByText('Processing selection · Group 1 of 1 · photos')).toBeVisible();
+  await expect(page.getByRole('progressbar', { name: 'Run group attempts completed' })).toHaveAttribute('value', '0');
+  await expect(page.locator('.execution-run-activity')).toContainText(/Elapsed \d+s/);
+  await page.clock.fastForward(31000);
+  await expect(page.locator('.execution-run-activity')).toContainText('Still waiting for the API or Immich');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Dedupe', exact: true }).click();
+  await expect(page.getByText('Checking album memberships and proposed transfers', { exact: true })).toBeVisible();
+  state.latest = runView('dry-run');
+  await finishRunStream(page, { type: 'result', result: executionResponse(state.latest) });
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeEnabled();
+  await expect(page.locator('.execution-run-activity')).toHaveCount(0);
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Execute selected', exact: true }).click();
+  await pushRunStage(page, false, 'transferring-albums');
+  await expect(page.getByText('Adding the keeper to missing albums', { exact: true })).toBeVisible();
+  await pushRunStage(page, false, 'verifying-resolution');
+  await expect(page.getByText('Verifying the keeper is retained and the loser is trashed and unlinked', { exact: true })).toBeVisible();
+  state.latest = runView('succeeded');
+  await finishRunStream(page, { type: 'result', result: executionResponse(state.latest) });
+  await expect(summary(page).getByText('Verified completed', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as RunProgressTestWindow).runProgressTest.calls)).toBe(2);
+});
+
+test('truncated execution streams retain the run ID, never authorize execution and never replay the run', async ({ page }) => {
+  await fakeApi(page, null); await openDedupe(page); await installRunStream(page);
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await pushRunStage(page, true, 'checking-assets'); await finishRunStream(page);
+  await expect(page.getByText(/Execution response was incomplete/)).toBeVisible();
+  await expect(page.getByText(`Request run: ${runId}`, { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+  await expect(page.locator('.execution-run-activity')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as RunProgressTestWindow).runProgressTest.calls)).toBe(1);
+});
+
+test('streamed journal failures preserve partial results and clear activity without approving execution', async ({ page }) => {
+  await fakeApi(page, null); await openDedupe(page); await installRunStream(page);
+  await page.getByRole('button', { name: 'Dry-run selected', exact: true }).click();
+  await pushRunStage(page, true, 'saving-evidence');
+  await finishRunStream(page, { type: 'error', status: 503, code: 'journal_unavailable', error: 'Recovery evidence could not be persisted', runId,
+    partialExecution: { ...executionResponse(runView('failed')), ok: false, dryRun: true } });
+  await expect(page.getByText(/Recovery evidence could not be persisted/)).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Partial results returned by the API' }).getByText('Failed', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Execute selected', exact: true })).toBeDisabled();
+});
+
 test('summary counts, exclusions and keyboard details explain outcomes; restoration survives navigation and reload', async ({ page }) => {
   const state = await fakeApi(page, runView('succeeded')); await openDedupe(page);
   await expect(summary(page).getByText('Verified completed', { exact: true })).toBeVisible();
@@ -369,7 +452,7 @@ test('review compares image metadata and named album changes, requires exact dry
   await expect(review.getByRole('heading', { name: 'Keep', exact: true })).not.toBeVisible();
   await review.getByRole('button', { name: 'Details for group photos', exact: true }).click();
   await expect(review.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
-  await expect(review.getByRole('heading', { name: 'Move to trash', exact: true })).toBeVisible();
+  await expect(review.getByRole('heading', { name: 'Trash', exact: true })).toBeVisible();
   await expect(review.locator('.asset-facts').getByText('/external/photo.jpg', { exact: true })).toBeVisible();
   await expect(review.getByText('200 bytes', { exact: true })).toBeVisible();
   await review.screenshot({ path: 'test-results/review-desktop.png' });

@@ -1,9 +1,10 @@
 import { ApiError, readResponse } from './apiResponse';
 export { ApiError } from './apiResponse';
+import { consumeExecutionRun } from './executionRunStream';
 import { consumeReviewPreparation, validResult } from './reviewPreparationStream';
 import { upgradeResolutionDraft } from '@immich-dedupe/shared';
-import type { ResolutionConflict, ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, SaveRulePresetRequest, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse } from '@immich-dedupe/shared';
-export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate } from '@immich-dedupe/shared';
+import type { ResolutionConflict, ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, SaveRulePresetRequest, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse, ExecutionRunResponse, ExecutionRunProgress } from '@immich-dedupe/shared';
+export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate, ExecutionRunResponse } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
@@ -78,24 +79,7 @@ export type DuplicateAnalysisResponse = {
   skipCount: number;
 };
 
-export type ExecutionRunResponse = {
-  runId?: string;
-  planId?: string;
-  selectedCount?: number;
-  excludedGroups?: Array<{ groupId: string; reason: 'processed' | 'legacy' | 'quarantined'; attemptIds: string[] }>;
-  stoppedEarly: boolean;
-  stopReason: string | null;
-  ok: boolean;
-  dryRun: boolean;
-  scanLimit: number;
-  executeLimit: number;
-  fetchedGroups: number;
-  eligibleCount: number;
-  actuallyExecutedCount: number;
-  resolvedCount: number;
-  trashedCount: number;
-  results: ExecutionResult[];
-};
+
 
 export type ExecutionPlanItem = {
   groupId: string;
@@ -304,8 +288,20 @@ export function cancelReviewedPreparation(preparationId: string) {
 export function selectAllReviewedPlan(planId: string) {
   return apiPost<ReviewedPlanResponse>(`/execution/plans/${encodeURIComponent(planId)}/select-all`, {});
 }
-export function runReviewedPlan(planId: string, selectedGroupIds: string[], dryRun: boolean) {
-  return apiPost<ExecutionRunResponse>(`/execution/plans/${encodeURIComponent(planId)}/run`, { selectedGroupIds, dryRun });
+export async function runReviewedPlan(planId: string, selectedGroupIds: string[], dryRun: boolean, onProgress?: (progress: ExecutionRunProgress) => void) {
+  const path = `/execution/plans/${encodeURIComponent(planId)}/run`;
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ selectedGroupIds, dryRun }) });
+  // Older APIs still return their ordinary JSON result, without live updates.
+  if (!response.ok || !response.headers.get('content-type')?.includes('application/x-ndjson')) return readResponse<ExecutionRunResponse>(response, { method: 'POST', path });
+  if (!response.body) throw new Error('Execution response was incomplete. The run may still be active; check the latest saved run before retrying.');
+  const terminal = await consumeExecutionRun(response.body, (progress) => {
+    if (progress.dryRun !== dryRun || progress.totalGroups !== selectedGroupIds.length) throw new Error('Execution progress does not match the requested selection');
+    onProgress?.(progress);
+  });
+  if (terminal.type === 'error') return readResponse<ExecutionRunResponse>(Response.json(terminal, { status: terminal.status }), { method: 'POST', path });
+  if (terminal.result.dryRun !== dryRun) throw new Error('Execution result does not match the requested mode');
+  return terminal.result;
 }
 export function getReviewedThumbnailUrl(planId: string, assetId: string) {
   return `${API_BASE_URL}/execution/plans/${encodeURIComponent(planId)}/assets/${encodeURIComponent(assetId)}/thumbnail`;

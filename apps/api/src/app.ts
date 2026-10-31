@@ -12,6 +12,7 @@ import type {
   ExecutionPlanItem,
   ReviewPreparationEvent,
   ReviewPreparationProgress,
+  ExecutionRunEvent,
 } from "@immich-dedupe/shared";
 import { createExecutionService, ExecutionServiceError } from "./executionService";
 import type { ExecutionJournal } from "./executionJournal";
@@ -696,6 +697,30 @@ export function createApp(dependencies: AppDependencies) {
   app.post("/execution/plans/:planId/run", async (req, res) => {
     const parsed = ReviewedRunSchema.safeParse(req.body);
     if (!parsed.success || !z.string().uuid().safeParse(req.params.planId).success) return res.status(400).json({ ok: false, error: "Invalid reviewed execution request" });
+    if (req.get('Accept')?.includes('application/x-ndjson')) {
+      function send(event: ExecutionRunEvent) {
+        if (res.destroyed || res.writableEnded) return;
+        if (!res.headersSent) {
+          res.status(200).set({ 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+          res.flushHeaders();
+        }
+        if (event.type !== 'progress' || !res.writableNeedDrain) res.write(`${JSON.stringify(event)}\n`);
+      }
+      try {
+        const { decision: _decision, ...result } = await execution.runReviewed(req.params.planId, parsed.data, (progress) => send({ type: 'progress', progress }));
+        send({ type: 'result', result });
+      } catch (error) {
+        const known = error instanceof ExecutionServiceError;
+        const status = known ? error.status : 503;
+        const code = known ? error.code : 'execution_unavailable';
+        const message = known && code !== 'execution_error' ? error.message : 'Execution could not be completed; check the latest saved run before retrying.';
+        const payload = { ...(known ? error.details : {}), type: 'error' as const, status, code, error: message };
+        if (!res.headersSent && !res.destroyed) return res.status(status).json({ ...payload, ok: false });
+        send(payload);
+      }
+      if (!res.destroyed) res.end();
+      return;
+    }
     try {
       const { decision: _decision, ...result } = await execution.runReviewed(req.params.planId, parsed.data);
       res.json(result);

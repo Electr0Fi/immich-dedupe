@@ -11,7 +11,7 @@ A local React/Express application for reviewing duplicate groups already identif
 - Optional **Quick Review** evaluates the duplicate-list response without per-image, album or thumbnail reads. Missing rule data remains unverified. Select provisional candidates and **Load selected details**, then dry-run and execute through the existing safety checks.
 
 - Review duplicate groups already identified by Immich. Excluded review groups explain unsupported asset counts, missing groups and inconsistent membership separately. Each prepared group starts with its details collapsed; expand groups individually or use Expand All and Collapse All. Selection checkboxes stay visible.
-- Compare keeper/loser thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute reviewed batches, and view or export batch logs as JSON or CSV. Select first N uses the review’s Execute Limit; Select All includes every eligible group in the prepared review and raises Execute Limit when needed, requiring a new dry-run. Review preparation shows live stages, checked/eligible/excluded counts and elapsed time. Cancel review stops early and retains fully checked groups as a usable partial review. Other pending requests show a spinner and status message.
+- Compare keeper/loser thumbnails and metadata, include or exclude eligible groups, dry-run the exact selection, execute reviewed batches, and view or export batch logs as JSON or CSV. Select first N uses the review’s Execute Limit; Select All includes every eligible group in the prepared review and raises Execute Limit when needed, requiring a new dry-run. Review preparation shows live stages, checked/eligible/excluded counts and elapsed time. Cancel review stops early and retains fully checked groups as a usable partial review. Dry-runs and execution show live stages, current group, completed attempt counts and elapsed time. Other pending requests show a spinner and status message.
 - Check album membership before resolution and verify the result. Failed or uncertain operations stop the batch.
 - Recheck group membership, asset details, file sizes, and album memberships before execution rather than relying on the preview cache.
 - Single-group and batch execution share safety checks, logging, run/attempt IDs, and processed/quarantine exclusions. Overlapping execution, recovery, or log-clearing requests return HTTP 409 within one API process.
@@ -126,7 +126,11 @@ The API defaults to port 3001. Open the Vite URL printed in the terminal, normal
 5. Choose **Execute selected** after the dry-run passes. Confirm the selected group and album-addition counts. Execution rechecks current data and may stop if it changed.
 6. Inspect the outcome and batch logs. Investigate `needs-verification` results before retrying; no mutation is automatically retried.
 
+During **Dry-run selected** and **Execute selected**, live updates beneath the activity message show the current stage, group position, completed attempt count and elapsed time. The initial whole-selection validation is shown separately from per-group processing. Live execution also reports album additions, membership checks, duplicate resolution and final verification. After 30 seconds without an update, the last stage stays visible with a waiting notice. These updates do not confirm success; use the final verified results. A lost connection does not stop or retry the run—refresh the saved run before retrying.
+
 ## Quick Review
+
+Full review asset cards use green **Keep** and red **Trash** pill tags matching the header status styling.
 
 Expanded provisional candidates show an indented file size (bytes) and dimensions line beneath both the keeper and loser. Missing values display as Unknown; these details use only the duplicate-list response.
 

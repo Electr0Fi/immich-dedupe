@@ -6,8 +6,8 @@ import type { ExecutionState } from '../useExecution';
 
 function AssetComparison({ asset, planId, keeper }: { asset: ReviewedAsset; planId: string; keeper: boolean }) {
   const [failed, setFailed] = useState(false);
-  return <section className="review-asset" aria-label={`${keeper ? 'Keep' : 'Move to trash'}: ${asset.fileName}`}>
-    <h4>{keeper ? 'Keep' : 'Move to trash'}</h4>
+  return <section className="review-asset" aria-label={`${keeper ? 'Keep' : 'Trash'}: ${asset.fileName}`}>
+    <h4><span className={`connection-badge connection-badge--${keeper ? 'connected' : 'error'}`}>{keeper ? 'Keep' : 'Trash'}</span></h4>
     {failed ? <div className="thumbnail-placeholder" role="img" aria-label={`Thumbnail unavailable for ${asset.fileName}`}>Thumbnail unavailable. Check asset.view permission and image availability in Immich, then prepare a new review. See Settings for required API key permissions.</div>
       : <img className="review-thumbnail" loading="lazy" src={getReviewedThumbnailUrl(planId, asset.id)} alt={`${keeper ? 'Keeper' : 'Loser'} preview: ${asset.fileName}`} onError={() => setFailed(true)} />}
     <p><strong>{asset.fileName}</strong></p>
@@ -83,7 +83,7 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
           <AssetComparison asset={candidate.keepAsset} planId={review.planId} keeper />
           <AssetComparison asset={candidate.trashAsset} planId={review.planId} keeper={false} />
         </div>
-        {'evidenceClass' in candidate.decision && <p><strong>Comparison:</strong> {candidate.decision.evidenceClass === 'checksum' ? 'Checksum match' : 'Metadata match — this does not prove identical content'}</p>}
+        {'evidenceClass' in candidate.decision && <p className="review-comparison"><strong>Comparison:</strong> {candidate.decision.evidenceClass === 'checksum' ? 'Checksum match' : 'Metadata match — this does not prove identical content'}</p>}
         <p><strong>Rule:</strong> {candidate.decision.matchedRuleName}</p>
         <ul>{candidate.decision.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
         <p><strong>Proposed additions to keeper:</strong> {candidate.trashAsset.albums.filter((a) => candidate.proposedAlbumIds.includes(a.albumId)).map((a) => a.albumName).join(', ') || 'None'}</p>

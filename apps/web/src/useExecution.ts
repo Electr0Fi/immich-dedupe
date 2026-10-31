@@ -1,4 +1,4 @@
-import type { ResolutionConflict, ReviewPreparationProgress, QuickReview } from '@immich-dedupe/shared';
+import type { ResolutionConflict, ReviewPreparationProgress, ExecutionRunProgress, QuickReview } from '@immich-dedupe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clearDedupeCache } from './dedupeCache';
 import { getPendingCandidates, preparePendingCandidates, recheckExcludedGroups, resetScanProgress, type PendingCandidate, type ScanSummary, type ScanRequest, ApiError, getLatestRun, getRun, prepareReviewedPlan, prepareQuickReview, prepareQuickSelection, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
@@ -48,6 +48,9 @@ export function useExecution(open: boolean) {
   const [expired, setExpired] = useState(false);
   const [run, setRun] = useState<RunView | null>(null);
   const [partialRun, setPartialRun] = useState<RunView | null>(null);
+  const [runProgress, setRunProgress] = useState<ExecutionRunProgress | null>(null);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [runProgressUpdatedAt, setRunProgressUpdatedAt] = useState<number | null>(null);
   const [request, setRequest] = useState<Request>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [reading, setReading] = useState(true);
@@ -294,10 +297,16 @@ export function useExecution(open: boolean) {
     pending.current = true;
     const current = ++version.current;
     const startedAt = new Date().toISOString();
+    let observedRunId: string | undefined;
+    setRunProgress(null); setRunStartedAt(Date.now()); setRunProgressUpdatedAt(null);
     setReading(false); setReadError(null);
     setRequest({ phase: 'pending', dryRun: params.dryRun, message: params.dryRun ? 'Dry-run request in progress…' : 'Live execution request in progress…' });
     try {
-      const result = await runReviewedPlan(review.planId, selected, params.dryRun);
+      const result = await runReviewedPlan(review.planId, selected, params.dryRun, (progress) => {
+        if (!mounted.current || version.current !== current) return;
+        observedRunId = progress.runId ?? observedRunId;
+        setRunProgress(progress); setRunProgressUpdatedAt(Date.now());
+      });
       if (!mounted.current || version.current !== current) return;
       setRun(responseView(result, startedAt)); setPartialRun(null);
       if (result.runId) {
@@ -319,11 +328,11 @@ export function useExecution(open: boolean) {
       if (error instanceof ApiError && error.partialExecution) setPartialRun(responseView(error.partialExecution, startedAt));
       const unknown = !(error instanceof ApiError) || (error.status >= 500 && !['identity_unavailable', 'journal_unavailable'].includes(error.code ?? ''));
       setRequest({ phase: unknown ? 'unknown' : 'failed', dryRun: params.dryRun, message,
-        runId: error instanceof ApiError ? error.runId : undefined, partial: error instanceof ApiError && Boolean(error.partialExecution) });
+        runId: error instanceof ApiError ? error.runId ?? observedRunId : observedRunId, partial: error instanceof ApiError && Boolean(error.partialExecution) });
     } finally { pending.current = false; void refreshPending(); }
   }
   return { resolutionConflicts, scanOptions, changeScanOptions, pendingCandidates, scanSummary, scanError, scanLoading, refreshPending, updateScan, loadPendingCandidates, invalidateReview, rulesPublished, review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
     prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
-    run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
+    runProgress, runStartedAt, runProgressUpdatedAt, run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }
 export type ExecutionState = ReturnType<typeof useExecution>;

@@ -7,6 +7,7 @@ import { createExecutionService, ExecutionServiceError } from '../src/executionS
 import { createExecutionJournal } from '../src/executionJournal';
 import { createExecutionLog } from '../src/executionLog';
 import { executionHarness } from './fixtures';
+import type { ExecutionRunProgress } from '@immich-dedupe/shared';
 
 function setup(t: TestContext) {
   const dir = fs.mkdtempSync(path.join(tmpdir(), 'immich-plans-'));
@@ -20,6 +21,58 @@ function setup(t: TestContext) {
   return { ...h, dir, journal, log, service, execution, prepare, advance: (ms: number) => { time += ms; } };
 }
 function error(status: number, code?: string) { return (e: unknown) => e instanceof ExecutionServiceError && e.status === status && (!code || e.code === code); }
+
+test('reviewed dry-run/live progress observes fresh checks and durable mutation intents without changing authorization', async (t) => {
+  const h = setup(t); const plan = await h.prepare(); const dryProgress: ExecutionRunProgress[] = [];
+  const dry = await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group'] }, (progress) => { dryProgress.push(progress); });
+  assert.equal(dry.results[0].outcome, 'dry-run'); assert.deepEqual(h.mutations, []);
+  for (const stage of ['checking-identity', 'checking-history', 'validating-selection', 'checking-membership', 'checking-assets', 'checking-albums', 'simulating', 'group-complete', 'finalizing']) assert.ok(dryProgress.some((p) => p.stage === stage), stage);
+  assert.ok(dryProgress.some((p) => p.phase === 'validating' && p.groupId === 'group'));
+  assert.ok(dryProgress.some((p) => p.phase === 'running' && p.groupId === 'group'));
+  assert.equal(dryProgress.at(-1)?.completedGroups, 1);
+  assert.ok(dryProgress.every((p) => p.runId === dry.runId && p.dryRun && p.totalGroups === 1));
+  assert.ok(!dryProgress.some((p) => ['transferring-albums', 'resolving-duplicates'].includes(p.stage)));
+  const liveProgress: ExecutionRunProgress[] = [];
+  const durableIntents: boolean[] = [];
+  const live = await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group'], dryRun: false }, (p) => {
+    liveProgress.push(p);
+    if (['transferring-albums', 'resolving-duplicates'].includes(p.stage)) {
+      const record = h.journal.run(plan.scope, p.runId!)!;
+      const kind = p.stage === 'transferring-albums' ? 'album-intent' : 'resolution-intent';
+      durableIntents.push(record.attempts[0].checkpoints.some(({ event }) => event.kind === kind));
+    }
+  });
+  assert.equal(live.results[0].outcome, 'succeeded'); assert.deepEqual(h.mutations, ['add', 'resolve']);
+  assert.deepEqual(durableIntents, [true, true]);
+  const stages = liveProgress.map((p) => p.stage);
+  assert.ok(stages.indexOf('transferring-albums') < stages.indexOf('verifying-albums'));
+  assert.ok(stages.indexOf('verifying-albums') < stages.indexOf('resolving-duplicates'));
+  assert.ok(stages.indexOf('resolving-duplicates') < stages.indexOf('verifying-resolution'));
+  assert.ok(liveProgress.every((p) => !p.dryRun));
+});
+
+test('progress observer exceptions and edits cannot stop a reviewed run or rewrite evidence', async (t) => {
+  const h = setup(t); const plan = await h.prepare();
+  const observer = (progress: ExecutionRunProgress) => { progress.completedGroups = 999; throw new Error('Disconnected observer'); };
+  const dry = await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group'] }, observer);
+  assert.equal(dry.results[0].outcome, 'dry-run');
+  const live = await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group'], dryRun: false }, observer);
+  assert.equal(live.results[0].outcome, 'succeeded'); assert.deepEqual(h.mutations, ['add', 'resolve']);
+  assert.equal(h.journal.run(plan.scope, live.runId)?.finishedAt !== null, true);
+});
+
+test('run progress counts sequential attempts separately from whole-selection validation', async (t) => {
+  const h = setup(t); const other = executionHarness('other');
+  const getInfo = h.client.getAssetInfo;
+  h.client.getAssetDuplicates = async () => [structuredClone(h.raw), structuredClone(other.raw)];
+  h.client.getAssetInfo = (args) => args.id.startsWith('other') ? other.client.getAssetInfo(args) : getInfo(args);
+  const plan = await h.prepare(); assert.equal(plan.candidates.length, 2);
+  const events: ExecutionRunProgress[] = [];
+  await h.execution.runReviewed(plan.planId, { selectedGroupIds: ['group', 'other'] }, (progress) => { events.push(progress); });
+  assert.deepEqual(events.filter((p) => p.stage === 'group-complete').map((p) => [p.groupId, p.groupIndex, p.completedGroups]), [['group', 1, 1], ['other', 2, 2]]);
+  assert.ok(events.filter((p) => p.phase === 'validating').every((p) => p.completedGroups === 0));
+  assert.deepEqual(h.mutations, []); assert.deepEqual(other.mutations, []);
+});
 
 test('review creation reads fresh comparisons, album actions and metadata, without mutations', async (t) => {
   const h = setup(t); const plan = await h.prepare();

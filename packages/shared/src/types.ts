@@ -205,6 +205,23 @@ export type ReviewedRunEvidence = {
   candidates: ReviewedCandidate[]; authorizingDryRunId: string | null;
 };
 export type ExecutionExclusion = { groupId: string; reason: "processed" | "legacy" | "quarantined"; attemptIds: string[] };
+export type ExecutionRunStage = 'checking-history' | 'checking-identity' | 'validating-selection' | 'checking-membership' | 'checking-assets' | 'checking-albums' | 'saving-evidence' | 'simulating' | 'transferring-albums' | 'verifying-albums' | 'resolving-duplicates' | 'verifying-resolution' | 'group-complete' | 'finalizing';
+/** Transient observations only; terminal results and the journal determine outcomes. */
+export type ExecutionRunProgress = {
+  runId: string | null; dryRun: boolean; phase: 'validating' | 'running' | 'finalizing'; stage: ExecutionRunStage;
+  groupId: string | null; groupIndex: number; totalGroups: number; completedGroups: number;
+};
+export type ExecutionRunResponse = {
+  runId?: string; planId?: string; selectedCount?: number; excludedGroups?: ExecutionExclusion[];
+  stoppedEarly: boolean; stopReason: string | null; ok: boolean; dryRun: boolean;
+  scanLimit: number; executeLimit: number; fetchedGroups: number; eligibleCount: number;
+  actuallyExecutedCount: number; resolvedCount: number; trashedCount: number; results: ExecutionResult[];
+};
+export type ExecutionRunEvent =
+  | { type: 'progress'; progress: ExecutionRunProgress }
+  | { type: 'result'; result: ExecutionRunResponse }
+  | { type: 'error'; status: number; code: string; error: string; runId?: string;
+      partialExecution?: ExecutionRunResponse; changedGroups?: ChangedPlanGroup[] };
 export type RunContext = { dryRun: boolean; scanLimit: number; executeLimit: number; source: "batch" | "single"; groupId: string | null };
 export type RunReport = {
   fetchedGroups: number; eligibleCount: number; excludedGroups: ExecutionExclusion[];

@@ -388,6 +388,67 @@ test('preparation streams progress before completion and accepts cancellation wh
   assert.equal((await fetch(`${base}/execution/preparations/00000000-0000-4000-8000-000000000001/cancel`, { method: 'POST' })).status, 404);
 });
 
+test('reviewed run streams dry-run progress and terminal stale-selection errors without mutations', async (t) => {
+  const h = executionHarness('one'); const base = await serve(t, dependencies(t, { immich: h.client }));
+  const post = (path: string, body: unknown, stream = false) => fetch(`${base}${path}`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(stream ? { Accept: 'application/x-ndjson' } : {}) }, body: JSON.stringify(body) });
+  const { plan } = await (await post('/execution/plans', {})).json();
+  const response = await post(`/execution/plans/${plan.planId}/run`, { selectedGroupIds: ['one'] }, true);
+  assert.equal(response.headers.get('content-type'), 'application/x-ndjson'); assert.equal(response.headers.get('cache-control'), 'no-store');
+  const events = (await response.text()).trim().split('\n').map((line) => JSON.parse(line));
+  assert.ok(events.some((event) => event.type === 'progress' && event.progress.stage === 'checking-albums'));
+  assert.equal(events.at(-1).type, 'result'); assert.equal(events.at(-1).result.results[0].outcome, 'dry-run');
+  assert.deepEqual(h.mutations, []);
+  h.raw.assets[0].isFavorite = true;
+  const stale = await post(`/execution/plans/${plan.planId}/run`, { selectedGroupIds: ['one'], dryRun: false }, true);
+  const errors = (await stale.text()).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(errors.at(-1).type, 'error'); assert.equal(errors.at(-1).status, 409);
+  assert.equal(errors.at(-1).code, 'plan_changed'); assert.equal(errors.at(-1).changedGroups[0].groupId, 'one');
+  assert.equal(errors.some((event) => event.type === 'result'), false); assert.deepEqual(h.mutations, []);
+  assert.equal((await post(`/execution/plans/${plan.planId}/run`, { selectedGroupIds: [], dryRun: false }, true)).status, 400);
+});
+
+test('disconnecting a live run stream retains the lock, continues exactly once and saves verified results', async (t) => {
+  const h = executionHarness('one'); const base = await serve(t, dependencies(t, { immich: h.client }));
+  const post = (path: string, body: unknown, stream = false) => fetch(`${base}${path}`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(stream ? { Accept: 'application/x-ndjson' } : {}) }, body: JSON.stringify(body) });
+  const { plan } = await (await post('/execution/plans', {})).json();
+  const endpoint = `/execution/plans/${plan.planId}/run`;
+  assert.equal((await post(endpoint, { selectedGroupIds: ['one'] })).status, 200);
+  let release!: () => void, entered!: () => void;
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  t.after(() => release());
+  const resolve = h.client.resolveDuplicates;
+  h.client.resolveDuplicates = async (args) => { entered(); await waiting; return resolve(args); };
+  const response = await post(endpoint, { selectedGroupIds: ['one'], dryRun: false }, true);
+  await started; await response.body!.cancel();
+  const busy = await post(endpoint, { selectedGroupIds: ['one'] }, true);
+  assert.equal(busy.status, 409); assert.equal((await busy.json()).code, 'execution_busy');
+  release();
+  let saved;
+  for (let index = 0; index < 100; index++) {
+    saved = await (await fetch(`${base}/execution/runs/latest`)).json();
+    if (saved.run?.finishedAt) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(saved.run.finishedAt); assert.equal(saved.run.attempts[0].result.outcome, 'succeeded');
+  assert.deepEqual(h.mutations, ['add', 'resolve']);
+});
+
+test('run stream preserves partial evidence when a durable checkpoint fails', async (t) => {
+  const h = executionHarness('one'); const journal = temporaryJournal(t);
+  const base = await serve(t, dependencies(t, { immich: h.client, journal }));
+  const { plan } = await (await fetch(`${base}/execution/plans`, { method: 'POST' })).json();
+  journal.checkpoint = () => { throw new Error('Checkpoint unavailable'); };
+  const response = await fetch(`${base}/execution/plans/${plan.planId}/run`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ selectedGroupIds: ['one'] }) });
+  const terminal = (await response.text()).trim().split('\n').map((line) => JSON.parse(line)).at(-1);
+  assert.equal(terminal.type, 'error'); assert.equal(terminal.status, 503); assert.equal(terminal.code, 'journal_unavailable');
+  assert.equal(terminal.partialExecution.results[0].outcome, 'failed'); assert.equal(terminal.partialExecution.runId, terminal.runId);
+  assert.deepEqual(h.mutations, []);
+});
+
 test('streamed preparation errors are terminal, sanitized and do not create a plan', async (t) => {
   const h = executionHarness('one'); h.client.getAssetDuplicates = async () => { throw new Error('private SDK connection details'); };
   const base = await serve(t, dependencies(t, { immich: h.client }));

@@ -680,7 +680,7 @@ button:focus-visible, summary:focus-visible { outline: 3px solid #1a56db; outlin
 .review-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .review-asset { min-width: 0; padding: 16px; border: 1px solid #dde2ea; border-radius: 10px; }
 .provisional-asset-facts { display: block; margin-inline-start: 1.5rem; }
-.provisional-comparison { padding-block-start: 1lh; }
+.provisional-comparison, .review-comparison { padding-block-start: 1lh; }
 .provisional-keeper-label { color: #1a7a4a; }
 .provisional-loser-label { color: #ba2b2b; }
 .review-asset h4 { margin: 0 0 12px; }

@@ -3,6 +3,7 @@ import { ScanProgressSummary } from '../components/ScanProgressSummary';
 import { PendingCandidates } from '../components/PendingCandidates';
 import { QuickReviewBatch } from '../components/QuickReviewBatch';
 import { ReviewPreparationActivity } from '../components/ReviewPreparationActivity';
+import { ExecutionRunActivity } from '../components/ExecutionRunActivity';
 import { ReviewedBatch } from '../components/ReviewedBatch';
 import { ExecutionResults } from '../components/ExecutionResults';
 import type { ExecutionState } from '../useExecution';
@@ -195,6 +196,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         <div className="dedupe-activity status-refreshing" role="status" aria-live="polite" aria-atomic="true">
           {activityMessage && <><span className="spinner" aria-hidden="true" /><span>{activityMessage}</span></>}
         </div>
+        {execution.busy && <ExecutionRunActivity execution={execution} />}
 
         {!quickMode && error && <p className="error" role="alert">Preview refresh failed: {error}. Use Refresh previews to try again. Execution results below are preserved.</p>}
       </section>
