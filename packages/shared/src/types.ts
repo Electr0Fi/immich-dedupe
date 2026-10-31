@@ -185,6 +185,16 @@ export type QuickReview = {
 };
 export type QuickReviewResponse = { ok: true; quickReview: QuickReview | null };
 export type PrepareQuickSelectionRequest = { selectedGroupIds: string[]; executeLimit: number };
+export type QuickDetailStage = 'checking-history' | 'checking-identity' | 'validating-selection' | 'checking-membership' | 'checking-assets' | 'checking-albums' | 'evaluating-rules' | 'finalizing';
+/** Read-only selected-group hydration; observations cannot authorize execution. */
+export type QuickDetailProgress = {
+  reviewId: string; stage: QuickDetailStage; groupId: string | null;
+  groupIndex: number; totalGroups: number; checkedGroups: number;
+};
+export type QuickDetailEvent =
+  | { type: 'progress'; progress: QuickDetailProgress }
+  | { type: 'result'; result: ReviewedPlanResponse }
+  | { type: 'error'; status: number; code: string; error: string; changedGroups?: ChangedPlanGroup[] };
 export type ReviewPreparationStage = "checking-history" | "checking-identity" | "fetching-groups" | "checking-membership" | "checking-assets" | "checking-albums" | "evaluating-rules" | "finalizing";
 export type ReviewPreparationProgress = {
   preparationId: string; stage: ReviewPreparationStage;

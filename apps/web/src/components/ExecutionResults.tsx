@@ -35,8 +35,14 @@ export function ExecutionResults({ execution, onReviewRecovery }: { execution: E
   const { run, request, reading, readError } = execution;
   const results = run?.attempts.flatMap((a) => a.result ? [a.result] : []) ?? [];
   const excluded = run?.report?.excludedGroups ?? [];
+  const verifiedCount = results.filter((result) => result.outcome === 'succeeded' && result.executed && result.resolvedDuplicate && result.trashedAsset).length;
+  const simulatedCount = results.filter((result) => result.outcome === 'dry-run').length;
+  const failedCount = results.filter((result) => result.outcome === 'failed').length;
+  const uncertainCount = results.filter((result) => result.outcome === 'needs-verification').length;
+  const recordedTitle = execution.partial ? 'Partial results returned by the API' : request ? 'Previous recorded run' : 'Latest run results';
+  const allRecorded = Boolean(run && run.attempts.length > 0 && results.length === run.attempts.length);
   return <section className="card" aria-labelledby="run-results-title">
-    <h2 id="run-results-title">{execution.partial ? 'Partial results returned by the API' : request ? 'Previous recorded run' : 'Latest run results'}</h2>
+    <h2>Execution summary</h2>
     <button disabled={execution.busy || reading} onClick={() => execution.refreshLatest()}>Refresh latest</button>
     <p className="field-hint">Latest journal run for the current Immich account, including runs from other tabs. Refresh to check again.</p>
     {request && <div className={request.phase === 'pending' ? '' : 'error'} role={request.phase === 'pending' ? 'status' : 'alert'}>
@@ -45,15 +51,22 @@ export function ExecutionResults({ execution, onReviewRecovery }: { execution: E
       {request.phase === 'unknown' && <p>Outcome unknown. The server may still be working. Refresh latest and review recovery before another live attempt; no automatic retry is performed.</p>}
       {request.phase === 'failed' && <p>The new request did not complete normally. Any returned partial results are shown below. A recording failure requires investigation before retrying.</p>}
     </div>}
+    {request?.phase === 'pending' && <p>{request.dryRun ? 'Dry-run' : 'Live execution'} selection: {execution.runProgress?.totalGroups ?? execution.selected.length} groups · {execution.runProgress?.completedGroups ?? 0} attempts completed. Final verified results will appear here when the response arrives.</p>}
     {reading && <p role="status">Loading latest run…</p>}
     {execution.partial && <p>These partial results came from the response and may not all be saved in the journal. They remain visible during this session; reload can only restore saved evidence.</p>}
     {readError && <p className="error" role="alert">{readError}</p>}
+    <h3 id="run-results-title">{recordedTitle}</h3>
+    {request && run && !execution.partial && <p>Recorded results remain visible while the current request is pending or unavailable. Use the run IDs to distinguish them; progress alone does not confirm the current request’s outcome.</p>}
     {!run ? <p>No recorded run loaded.</p> : <>
       <p><strong>{run.context ? (run.context.dryRun ? 'Dry-run' : 'Live execution') : 'Mode not recorded'} · {run.phase}</strong></p>
+      {run.phase === 'finished' && !run.report?.stoppedEarly && !run.report?.requestError && allRecorded && run.context?.dryRun === false && verifiedCount === run.attempts.length && <p>Execution completed successfully: {verifiedCount} {verifiedCount === 1 ? 'group resolved' : 'groups resolved'} and verified.</p>}
+      {run.phase === 'finished' && !run.report?.stoppedEarly && !run.report?.requestError && allRecorded && run.context?.dryRun === true && simulatedCount === run.attempts.length && <p>Dry-run completed: {simulatedCount} {simulatedCount === 1 ? 'group simulated' : 'groups simulated'}. No Immich assets were changed.</p>}
+      {(failedCount > 0 || uncertainCount > 0) && <p>{verifiedCount} groups resolved and verified · {failedCount} failed · {uncertainCount} need verification. Inspect the group results before another attempt.</p>}
       {run.phase === 'running' && <p role="status">This run is still active. These are the currently recorded facts; refresh to check completion.</p>}
       {run.phase === 'interrupted' && <p className="error">The run has no recorded completion. Its outcome may be incomplete; review recovery before retrying.</p>}
       {run.planId && <p className="run-identifier">Reviewed plan: {run.planId} · Selected: {run.selectedCount}</p>}
       <p className="run-identifier">Run: {run.runId} · Started: {run.startedAt}</p>
+      <p>Selected groups: {run.selectedCount ?? 'Not recorded'} · Attempted groups: {run.attempts.length} · Not attempted: {run.selectedCount === undefined ? 'Not recorded' : Math.max(0, run.selectedCount - run.attempts.length)}</p>
       <dl className="stats outcome-summary">
         {Object.entries(outcomeLabels).map(([outcome, label]) => <OutcomeStat key={outcome} label={label}
           value={results.filter((r) => r.outcome === outcome).length} definition={outcomeDefinitions[outcome]} />)}

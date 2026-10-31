@@ -4,6 +4,7 @@ import { PendingCandidates } from '../components/PendingCandidates';
 import { QuickReviewBatch } from '../components/QuickReviewBatch';
 import { ReviewPreparationActivity } from '../components/ReviewPreparationActivity';
 import { ExecutionRunActivity } from '../components/ExecutionRunActivity';
+import { QuickDetailActivity } from '../components/QuickDetailActivity';
 import { ReviewedBatch } from '../components/ReviewedBatch';
 import { ExecutionResults } from '../components/ExecutionResults';
 import type { ExecutionState } from '../useExecution';
@@ -197,6 +198,7 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
           {activityMessage && <><span className="spinner" aria-hidden="true" /><span>{activityMessage}</span></>}
         </div>
         {execution.busy && <ExecutionRunActivity execution={execution} />}
+        {execution.loadingDetails && execution.detailStartedAt !== null && <QuickDetailActivity execution={execution} />}
 
         {!quickMode && error && <p className="error" role="alert">Preview refresh failed: {error}. Use Refresh previews to try again. Execution results below are preserved.</p>}
       </section>
@@ -235,14 +237,14 @@ export function DedupeScreen({ requireConfirmation, execution, onReviewRecovery 
         )}
       </section>
 
+      <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
+
       {preparedSnapshot?.scan && <ScanProgressSummary scan={preparedSnapshot.scan} quick={Boolean(execution.quickSnapshot)} />}
 
       {execution.quickSnapshot ? <QuickReviewBatch execution={execution} /> : <ReviewedBatch execution={execution} />}
 
       <ResolutionConflicts execution={execution} />
       <PendingCandidates execution={execution} />
-
-      <ExecutionResults execution={execution} onReviewRecovery={onReviewRecovery} />
 
       <section className="card">
         <h2>Manual Review</h2>

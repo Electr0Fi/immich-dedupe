@@ -1,9 +1,10 @@
 import { ApiError, readResponse } from './apiResponse';
 export { ApiError } from './apiResponse';
+import { consumeQuickDetails } from './quickDetailStream';
 import { consumeExecutionRun } from './executionRunStream';
 import { consumeReviewPreparation, validResult } from './reviewPreparationStream';
 import { upgradeResolutionDraft } from '@immich-dedupe/shared';
-import type { ResolutionConflict, ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, SaveRulePresetRequest, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse, ExecutionRunResponse, ExecutionRunProgress } from '@immich-dedupe/shared';
+import type { ResolutionConflict, ScanOptions, ScanSummary, PendingScanCandidate, RulesState, RuleSetDraft, SaveRulePresetRequest, ConfiguredDecision, ReviewPreparationProgress, ReviewPreparationResult, QuickReviewResponse, RunViewResponse, ReviewedPlanResponse, ExecutionRunResponse, ExecutionRunProgress, QuickDetailProgress } from '@immich-dedupe/shared';
 export type { RunView, RunViewResponse, ReviewedPlan, ReviewedAsset, ReviewedCandidate, ExecutionRunResponse } from '@immich-dedupe/shared';
 
 const API_BASE_URL =
@@ -279,8 +280,19 @@ export async function prepareQuickReview(scanLimit: number, executeLimit: number
   if (!('quickReview' in terminal.result)) throw new Error('Invalid Quick Review response');
   return terminal.result;
 }
-export function prepareQuickSelection(reviewId: string, selectedGroupIds: string[], executeLimit: number) {
-  return apiPost<ReviewedPlanResponse>(`/execution/quick-reviews/${encodeURIComponent(reviewId)}/prepare-plan`, { selectedGroupIds, executeLimit });
+export async function prepareQuickSelection(reviewId: string, selectedGroupIds: string[], executeLimit: number, onProgress?: (progress: QuickDetailProgress) => void) {
+  const path = `/execution/quick-reviews/${encodeURIComponent(reviewId)}/prepare-plan`;
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }, body: JSON.stringify({ selectedGroupIds, executeLimit }) });
+  if (!response.ok || !response.headers.get('content-type')?.includes('application/x-ndjson')) return readResponse<ReviewedPlanResponse>(response, { method: 'POST', path });
+  if (!response.body) throw new Error('Detail-loading response was incomplete; Quick Review was preserved. No execution was requested.');
+  const terminal = await consumeQuickDetails(response.body, (progress) => {
+    if (progress.reviewId !== reviewId || progress.totalGroups !== selectedGroupIds.length) throw new Error('Detail-loading progress does not match the requested selection');
+    onProgress?.(progress);
+  });
+  if (terminal.type === 'error') return readResponse<ReviewedPlanResponse>(Response.json(terminal, { status: terminal.status }), { method: 'POST', path });
+  const ids = terminal.result.plan.candidates.map((candidate) => candidate.groupId);
+  if (ids.length !== selectedGroupIds.length || new Set(ids).size !== ids.length || ids.some((id) => !selectedGroupIds.includes(id))) throw new Error('Detailed review does not match the requested selection');
+  return terminal.result;
 }
 export function cancelReviewedPreparation(preparationId: string) {
   return apiPost<{ ok: true; status: 'finished' | 'cancelling' }>(`/execution/preparations/${encodeURIComponent(preparationId)}/cancel`, {});

@@ -18,6 +18,11 @@ export type PendingScanCandidate = {
   trashPath: string | null;
   comparisonClass: string | null;
   reason: string;
+  /** Last-observed advisory details; older proposals may not contain these. */
+  keepMetadata?: { fileSize: number | null; width: number | null; height: number | null };
+  trashMetadata?: { fileSize: number | null; width: number | null; height: number | null };
+  ruleName?: string | null;
+  reasons?: string[];
   rulesetRevision: string;
   observedAt: string;
 };

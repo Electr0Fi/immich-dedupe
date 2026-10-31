@@ -58,7 +58,8 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
       {review.ruleset && <p className="run-identifier">Rules revision: {review.ruleset.revision}</p>}
       <p className="run-identifier">Plan: {review.planId}</p>
       {execution.expired && !execution.busy && <p className="error" role="alert">This review expired. Prepare a new review and dry-run the selection.</p>}
-      {execution.invalid && !execution.expired && !execution.busy && <p className="error" role="alert">This review is no longer available for execution. Prepare a new review before retrying.</p>}
+      {execution.completedReviewGroups > 0 && <p role="status">{execution.completedReviewGroups} successfully resolved {execution.completedReviewGroups === 1 ? 'group removed' : 'groups removed'} from this review. See Execution summary above for the results. Prepare a new review and dry-run before executing any remaining groups.</p>}
+      {execution.invalid && !execution.expired && !execution.busy && review.candidates.length > 0 && <p className="error" role="alert">This review is no longer available for execution. Prepare a new review before retrying.</p>}
       {execution.canExecute ? <p role="status">Dry-run passed for this exact selection. Ready for explicit live execution.</p> : execution.validReview && <p>Complete a successful dry-run of the exact selection before live execution. Changing selection clears that approval.</p>}
       {execution.selectionMessage && <p role="status">{execution.selectionMessage}</p>}
       <p>Select first {review.executeLimit} uses this review’s Execute Limit. Select All includes every eligible group checked in this review and raises Execute Limit if needed. Changing selection requires a new dry-run.</p>
@@ -71,7 +72,7 @@ export function ReviewedBatch({ execution }: { execution: ExecutionState }) {
         <button disabled={review.candidates.length + review.excludedGroups.length === 0}
           onClick={() => setExpansion({ planId: review.planId, groupIds: [] })}>Collapse All</button>
       </div>
-      {review.candidates.length === 0 && <p>No eligible groups among the checked groups.</p>}
+      {review.candidates.length === 0 && <p>{execution.completedReviewGroups > 0 ? 'All eligible groups in this review have been successfully resolved.' : 'No eligible groups among the checked groups.'}</p>}
       {review.candidates.map((candidate) => <ReviewGroup key={`${review.planId}-${candidate.groupId}`} groupId={candidate.groupId}
         title={candidate.keepAsset.fileName} expanded={expandedIds.includes(candidate.groupId)} onToggle={() => toggleGroup(candidate.groupId)}
         selection={<label className="review-selection"><input type="checkbox" aria-label={`Include group ${candidate.groupId}`}

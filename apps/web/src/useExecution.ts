@@ -1,5 +1,6 @@
-import type { ResolutionConflict, ReviewPreparationProgress, ExecutionRunProgress, QuickReview } from '@immich-dedupe/shared';
+import type { ResolutionConflict, ReviewPreparationProgress, ExecutionRunProgress, QuickDetailProgress, ExecutionResult, QuickReview } from '@immich-dedupe/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { successfulReviewGroupIds } from './reviewCompletion';
 import { clearDedupeCache } from './dedupeCache';
 import { getPendingCandidates, preparePendingCandidates, recheckExcludedGroups, resetScanProgress, type PendingCandidate, type ScanSummary, type ScanRequest, ApiError, getLatestRun, getRun, prepareReviewedPlan, prepareQuickReview, prepareQuickSelection, cancelReviewedPreparation, selectAllReviewedPlan, runReviewedPlan, type ReviewedPlan, type ExecutionRunResponse, type RunView, type RunViewResponse } from './api';
 
@@ -25,6 +26,10 @@ export function useExecution(open: boolean) {
   const [quickSnapshot, setQuickSnapshot] = useState<QuickReview | null>(null);
   const [quickReviewEnabled, setQuickReviewEnabled] = useState(false);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [detailProgress, setDetailProgress] = useState<QuickDetailProgress | null>(null);
+  const [detailStartedAt, setDetailStartedAt] = useState<number | null>(null);
+  const [detailProgressUpdatedAt, setDetailProgressUpdatedAt] = useState<number | null>(null);
+  const [resolvedReview, setResolvedReview] = useState<{ planId: string; ids: string[] } | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [scanOptions, setScanOptions] = useState<ScanRequest>({ mode: 'groups' });
   const [resolutionConflicts, setResolutionConflicts] = useState<ResolutionConflict[]>([]);
@@ -58,14 +63,16 @@ export function useExecution(open: boolean) {
   const pending = useRef(false);
   const mounted = useRef(false);
   const scope = useRef<string | null>(null);
+  const returnedRun = useRef<RunView | null>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const applyLatest = useCallback((value: RunViewResponse, current: number) => {
     if (!mounted.current || version.current !== current) return;
     const key = JSON.stringify(value.scope);
-    if (scope.current && scope.current !== key) { setResolutionConflicts([]); setPendingCandidates([]); setPartialRun(null); setRequest(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
+    if (scope.current && scope.current !== key) { returnedRun.current = null; setResolutionConflicts([]); setPendingCandidates([]); setPartialRun(null); setRequest(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
     scope.current = key;
-    setRun(value.run); setReadError(null);
+    setRun(value.run ?? returnedRun.current);
+    setReadError(!value.run && returnedRun.current ? 'No saved run was returned. Showing the last received results; use Refresh latest to check saved evidence.' : null);
     setPartialRun((partial) => partial && partial.runId === value.run?.runId ? {
       ...partial,
       attempts: partial.attempts.map((attempt) => {
@@ -79,7 +86,7 @@ export function useExecution(open: boolean) {
   const readFailure = useCallback((error: unknown, current: number) => {
     if (!mounted.current || version.current !== current) return;
     setReadError(error instanceof Error ? error.message : 'Latest run could not be loaded');
-    if (error instanceof ApiError && error.code === 'identity_unavailable') { setRun(null); setPartialRun(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
+    if (error instanceof ApiError && error.code === 'identity_unavailable') { returnedRun.current = null; setRun(null); setPartialRun(null); setReview(null); setQuickSnapshot(null); setAuthorization(null); setSelected([]); }
   }, []);
   const refreshLatest = useCallback(async () => {
     if (pending.current) return;
@@ -148,6 +155,7 @@ export function useExecution(open: boolean) {
     if (pending.current || ids.length === 0 || ids.length > limits.executeLimit) return;
     pending.current = true;
     const current = ++version.current;
+    setDetailProgress(null); setDetailStartedAt(null); setDetailProgressUpdatedAt(null);
     setLoadingDetails(true); setReading(false); setReviewError(null); setAuthorization(null);
     try {
       const { plan } = await preparePendingCandidates(ids, limits.executeLimit);
@@ -173,9 +181,12 @@ export function useExecution(open: boolean) {
     if (Date.parse(quickSnapshot.expiresAt) <= Date.now()) { setExpired(true); return; }
     pending.current = true;
     const current = ++version.current;
+    setDetailProgress(null); setDetailStartedAt(Date.now()); setDetailProgressUpdatedAt(null);
     setLoadingDetails(true); setReading(false); setAuthorization(null); setReviewError(null);
     try {
-      const { plan } = await prepareQuickSelection(quickSnapshot.reviewId, selected, limits.executeLimit);
+      const { plan } = await prepareQuickSelection(quickSnapshot.reviewId, selected, limits.executeLimit, (progress) => {
+        if (mounted.current && version.current === current) { setDetailProgress(progress); setDetailProgressUpdatedAt(Date.now()); }
+      });
       if (!mounted.current || version.current !== current) return;
       setReview(plan); setQuickSnapshot(null); setSelected(plan.candidates.map((candidate) => candidate.groupId));
       setLimits({ scanLimit: plan.scanLimit, executeLimit: plan.executeLimit });
@@ -275,7 +286,7 @@ export function useExecution(open: boolean) {
       } else if (session.requested) setPreparationMessage('The review finished before cancellation took effect. All completed results are available below.');
       if (!snapshot) return value.status;
       const key = JSON.stringify(snapshot.scope);
-      if (scope.current && key !== scope.current) { setRun(null); setPartialRun(null); setRequest(null); }
+      if (scope.current && key !== scope.current) { returnedRun.current = null; setRun(null); setPartialRun(null); setRequest(null); }
       scope.current = key;
       setLimits({ scanLimit: snapshot.scanLimit, executeLimit: snapshot.executeLimit });
       if ('reviewId' in snapshot) setQuickSnapshot(snapshot); else setReview(snapshot);
@@ -288,6 +299,14 @@ export function useExecution(open: boolean) {
   }
   const validReview = Boolean(review && !invalid && !expired);
   const selectionKey = JSON.stringify(selected);
+  function removeVerifiedGroups(source: ReviewedPlan, requested: string[], results: ExecutionResult[]) {
+    const ids = successfulReviewGroupIds(source, requested, results);
+    if (!ids.length) return;
+    setReview((value) => value?.planId === source.planId ? { ...value, candidates: value.candidates.filter((candidate) => !ids.includes(candidate.groupId)) } : value);
+    setSelected((value) => value.filter((id) => !ids.includes(id)));
+    setPendingCandidates((value) => value.filter((candidate) => !ids.includes(candidate.groupId)));
+    setResolvedReview((value) => ({ planId: source.planId, ids: [...new Set([...(value?.planId === source.planId ? value.ids : []), ...ids])] }));
+  }
   async function execute(params: { dryRun: boolean }) {
     if (pending.current || !review || !validReview || selected.length === 0 || (!params.dryRun && authorization !== selectionKey)) return;
     if (Date.parse(review.expiresAt) <= Date.now()) { setExpired(true); setAuthorization(null); return; }
@@ -308,12 +327,20 @@ export function useExecution(open: boolean) {
         setRunProgress(progress); setRunProgressUpdatedAt(Date.now());
       });
       if (!mounted.current || version.current !== current) return;
-      setRun(responseView(result, startedAt)); setPartialRun(null);
+      returnedRun.current = responseView(result, startedAt);
+      setRun(returnedRun.current); setPartialRun(null); setRequest(null);
+      if (!params.dryRun && !result.dryRun) removeVerifiedGroups(review, selected, result.results);
       if (result.runId) {
-        try { applyLatest(await getRun(result.runId), current); }
-        catch {
-          if (mounted.current && version.current === current) setReadError('Results received; saved evidence could not be refreshed. Use Refresh latest to check the journal.');
+        setReading(true);
+        try {
+          const saved = await getRun(result.runId);
+          if (saved.run?.runId !== result.runId) throw new Error('Saved run response did not match the received result');
+          applyLatest(saved, current);
         }
+        catch (error) {
+          if (error instanceof ApiError && error.code === 'identity_unavailable') readFailure(error, current);
+          else if (mounted.current && version.current === current) setReadError('Results received; saved evidence could not be refreshed. Use Refresh latest to check the journal.');
+        } finally { if (mounted.current && version.current === current) setReading(false); }
       }
       if (mounted.current && version.current === current) {
         setRequest(null);
@@ -325,13 +352,16 @@ export function useExecution(open: boolean) {
       if (error instanceof ApiError && error.code === 'execution_busy') { setInvalid(false); setAuthorization(approved); }
       else setInvalid(true);
       const message = error instanceof Error ? error.message : 'The execution response was lost';
-      if (error instanceof ApiError && error.partialExecution) setPartialRun(responseView(error.partialExecution, startedAt));
+      if (error instanceof ApiError && error.partialExecution) {
+        setPartialRun(responseView(error.partialExecution, startedAt));
+        if (!params.dryRun && !error.partialExecution.dryRun) removeVerifiedGroups(review, selected, error.partialExecution.results);
+      }
       const unknown = !(error instanceof ApiError) || (error.status >= 500 && !['identity_unavailable', 'journal_unavailable'].includes(error.code ?? ''));
       setRequest({ phase: unknown ? 'unknown' : 'failed', dryRun: params.dryRun, message,
         runId: error instanceof ApiError ? error.runId ?? observedRunId : observedRunId, partial: error instanceof ApiError && Boolean(error.partialExecution) });
     } finally { pending.current = false; void refreshPending(); }
   }
-  return { resolutionConflicts, scanOptions, changeScanOptions, pendingCandidates, scanSummary, scanError, scanLoading, refreshPending, updateScan, loadPendingCandidates, invalidateReview, rulesPublished, review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
+  return { detailProgress, detailStartedAt, detailProgressUpdatedAt, completedReviewGroups: resolvedReview?.planId === review?.planId ? resolvedReview?.ids.length ?? 0 : 0, resolutionConflicts, scanOptions, changeScanOptions, pendingCandidates, scanSummary, scanError, scanLoading, refreshPending, updateScan, loadPendingCandidates, invalidateReview, rulesPublished, review, quickSnapshot, quickReviewEnabled, changeQuickReview, loadingDetails, loadSelectedDetails, validQuickReview: Boolean(quickSnapshot && !invalid && !expired), selected, limits, preparing, selectingAll, selectionMessage, selectAll, cancelling, preparationProgress, preparationStartedAt, progressUpdatedAt, preparationMessage, cancelPreparation, reviewError, expired, invalid, validReview,
     prepare, selectGroups, changeLimits, canExecute: validReview && selected.length > 0 && authorization === selectionKey,
     runProgress, runStartedAt, runProgressUpdatedAt, run: partialRun ?? run, request, readError, reading, refreshLatest, execute, busy: request?.phase === 'pending', partial: Boolean(partialRun) };
 }

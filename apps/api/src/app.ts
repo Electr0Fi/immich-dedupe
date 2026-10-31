@@ -13,6 +13,7 @@ import type {
   ReviewPreparationEvent,
   ReviewPreparationProgress,
   ExecutionRunEvent,
+  QuickDetailEvent,
 } from "@immich-dedupe/shared";
 import { createExecutionService, ExecutionServiceError } from "./executionService";
 import type { ExecutionJournal } from "./executionJournal";
@@ -682,6 +683,30 @@ export function createApp(dependencies: AppDependencies) {
     const parsed = PrepareQuickSelectionSchema.safeParse(req.body);
     if (!z.string().uuid().safeParse(req.params.reviewId).success || !parsed.success) return res.status(400).json({ ok: false, error: "Invalid quick selection" });
     res.set("Cache-Control", "no-store");
+    if (req.get('Accept')?.includes('application/x-ndjson')) {
+      function send(event: QuickDetailEvent) {
+        if (res.destroyed || res.writableEnded) return;
+        if (!res.headersSent) {
+          res.status(200).set({ 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+          res.flushHeaders();
+        }
+        if (event.type !== 'progress' || !res.writableNeedDrain) res.write(`${JSON.stringify(event)}\n`);
+      }
+      try {
+        const result = await execution.prepareQuickSelection(req.params.reviewId, parsed.data, (progress) => send({ type: 'progress', progress }));
+        send({ type: 'result', result });
+      } catch (error) {
+        const known = error instanceof ExecutionServiceError;
+        const status = known ? error.status : 503;
+        const code = known ? error.code : 'preflight_unavailable';
+        const message = known && code !== 'execution_error' ? error.message : 'Selected group details could not be verified; Quick Review results were preserved';
+        const payload = { ...(known ? error.details : {}), type: 'error' as const, status, code, error: message };
+        if (!res.headersSent && !res.destroyed) return res.status(status).json({ ...payload, ok: false });
+        send(payload);
+      }
+      if (!res.destroyed) res.end();
+      return;
+    }
     try { res.json(await execution.prepareQuickSelection(req.params.reviewId, parsed.data)); } catch (error) { executionError(res, error); }
   });
   app.post("/execution/preparations/:preparationId/cancel", (req, res) => {

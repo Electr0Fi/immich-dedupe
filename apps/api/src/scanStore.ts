@@ -12,10 +12,17 @@ export class ScanStoreError extends Error {
 }
 
 const scopeSchema = z.object({ apiUrl: z.string().url(), accountId: z.string().min(1) }).strict();
+const pendingMetadataSchema = z.object({ fileSize: z.number().finite().positive().nullable(), width: z.number().finite().positive().nullable(), height: z.number().finite().positive().nullable() }).strict();
+function pendingMetadata(asset: DuplicateGroup['assets'][number]) {
+  const observed = (value: number | null) => value !== null && Number.isFinite(value) && value > 0 ? value : null;
+  return { fileSize: observed(asset.fileSize), width: observed(asset.width), height: observed(asset.height) };
+}
 const pendingSchema = z.object({
   groupId: z.string().min(1), keepAssetId: z.string().min(1), trashAssetId: z.string().min(1),
   keepFileName: z.string(), trashFileName: z.string(), keepPath: z.string().nullable(), trashPath: z.string().nullable(),
   comparisonClass: z.string().nullable(), reason: z.string(), rulesetRevision: z.string().min(1), observedAt: z.iso.datetime(),
+  keepMetadata: pendingMetadataSchema.optional(), trashMetadata: pendingMetadataSchema.optional(),
+  ruleName: z.string().nullable().optional(), reasons: z.array(z.string()).optional(),
 }).strict();
 const entrySchema = z.object({
   conflict: z.object({ ruleName: z.string().nullable(), observedAt: z.iso.datetime(), assessment: resolutionAssessmentSchema }).strict().optional(),
@@ -52,6 +59,7 @@ export function scanGroupFingerprint(group: DuplicateGroup): string {
 }
 export type ScanObservation = {
   resolution?: ResolutionAssessment; ruleName?: string | null;
+  reasons?: string[];
   status: ScanClassification;
   reason: string;
   keepAssetId?: string;
@@ -191,6 +199,8 @@ export function createScanStore(options: ScanStoreOptions = {}) {
         if (!keep || !trash || keep.id === trash.id) throw new ScanStoreError("A pending proposal requires two distinct assets in the group.");
         pending = { groupId, keepAssetId: keep.id, trashAssetId: trash.id, keepFileName: keep.fileName, trashFileName: trash.fileName,
           keepPath: keep.originalPath, trashPath: trash.originalPath, comparisonClass: observation.comparisonClass ?? null,
+          keepMetadata: pendingMetadata(keep), trashMetadata: pendingMetadata(trash),
+          ruleName: observation.ruleName ?? null, reasons: observation.reasons ?? [observation.reason],
           reason: observation.reason, rulesetRevision: next.rulesetRevision, observedAt: timestamp };
       }
       entry.status = observation.status; entry.reason = observation.reason; entry.observedAt = timestamp;
